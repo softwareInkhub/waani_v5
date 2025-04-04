@@ -1,0 +1,1365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp API Documentation</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.24.1/prism.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/prismjs@1.24.1/themes/prism-tomorrow.css" rel="stylesheet" />
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <!-- Header -->
+    <header class="bg-gray-900 text-white py-4 px-6 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto flex justify-between items-center">
+            <div>
+                <h1 class="text-2xl font-bold">WhatsApp API Documentation</h1>
+                <p class="text-gray-400 text-sm">API Version 1.0</p>
+            </div>
+            <div class="flex items-center space-x-4">
+                <div class="relative">
+                    <select id="deviceSelect" class="bg-gray-800 text-white px-4 py-2 rounded border border-gray-700">
+                        <option value="">Select a device...</option>
+                    </select>
+                    <div id="deviceStatus" class="absolute -bottom-6 left-0 text-sm"></div>
+                </div>
+                <button onclick="showQRModal()" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700">
+                    Add Device
+                </button>
+                <a href="/" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
+                    Back to Dashboard
+                </a>
+            </div>
+        </div>
+    </header>
+
+    <!-- QR Code Modal -->
+    <div id="qrModal" class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-semibold">Scan QR Code</h3>
+                <button onclick="hideQRModal()" class="text-gray-500 hover:text-gray-700">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            <div class="flex justify-center mb-4">
+                <canvas id="qrCanvas" class="hidden"></canvas>
+            </div>
+            <p id="qrStatus" class="text-sm text-center text-gray-600">
+                Generating QR code...
+            </p>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="max-w-7xl mx-auto p-6">
+        <!-- API Sections -->
+        <div class="space-y-8">
+            <!-- Authentication Section -->
+            <div class="bg-white rounded-lg shadow-md overflow-hidden">
+                <div class="bg-blue-600 text-white p-4">
+                    <h2 class="text-xl font-semibold">Authentication</h2>
+                </div>
+                <div class="divide-y">
+                    <!-- QR Code Generation -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-green-500 text-white px-2 py-1 rounded text-sm">GET</span>
+                                <span class="font-mono">/qr</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Generate QR Code for device authentication</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Description</h4>
+                                <p class="text-sm text-gray-600">Generates a QR code that can be scanned with WhatsApp to authenticate a new device.</p>
+                            </div>
+                            <button onclick="testEndpoint('qr')" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                                Try it out
+                            </button>
+                            <div id="qr-response" class="mt-4"></div>
+                        </div>
+                    </div>
+
+                    <!-- Logout -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-red-500 text-white px-2 py-1 rounded text-sm">POST</span>
+                                <span class="font-mono">/logout/{deviceId}</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Logout a device</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Description</h4>
+                                <p class="text-sm text-gray-600">Logs out the specified device and removes its session.</p>
+                            </div>
+                            <button onclick="testEndpoint('logout')" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                                Try it out
+                            </button>
+                            <div id="logout-response" class="mt-4"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Messaging Section -->
+            <div class="bg-white rounded-lg shadow-md overflow-hidden">
+                <div class="bg-green-600 text-white p-4">
+                    <h2 class="text-xl font-semibold">Messaging</h2>
+                </div>
+                <div class="divide-y">
+                    <!-- Get Messages -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-green-500 text-white px-2 py-1 rounded text-sm">GET</span>
+                                <span class="font-mono">/messages/list</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Get all messages</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Description</h4>
+                                <p class="text-sm text-gray-600">Retrieves all messages for the selected device.</p>
+                            </div>
+                            <button onclick="getMessages()" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                                Try it out
+                            </button>
+                            <div id="messages-response" class="mt-4"></div>
+                        </div>
+                    </div>
+
+                    <!-- Get Messages by Chat -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-green-500 text-white px-2 py-1 rounded text-sm">GET</span>
+                                <span class="font-mono">/messages/list/{chatId}</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Get messages by chat</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Parameters</h4>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Chat ID</label>
+                                    <input type="text" id="chatMessagesId" class="w-full p-2 border rounded" placeholder="911234567890@s.whatsapp.net">
+                                </div>
+                            </div>
+                            <button onclick="getMessagesByChat()" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                                Try it out
+                            </button>
+                            <div id="chat-messages-response" class="mt-4"></div>
+                        </div>
+                    </div>
+
+                    <!-- Send Text Message -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-blue-500 text-white px-2 py-1 rounded text-sm">POST</span>
+                                <span class="font-mono">/messages/text</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Send a text message</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Request Body</h4>
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Recipient (with country code)</label>
+                                        <input type="text" id="textMessageRecipient" class="w-full p-2 border rounded" placeholder="911234567890">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Message</label>
+                                        <textarea id="textMessageContent" class="w-full p-2 border rounded" rows="3"></textarea>
+                                    </div>
+                                </div>
+                            </div>
+                            <button onclick="sendTextMessage()" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                                Try it out
+                            </button>
+                            <div id="text-message-response" class="mt-4"></div>
+                        </div>
+                    </div>
+
+                    <!-- Send Media Message -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-blue-500 text-white px-2 py-1 rounded text-sm">POST</span>
+                                <span class="font-mono">/messages/{type}</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Send a media message (image/video/audio/document)</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Request Body</h4>
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Media Type</label>
+                                        <select id="mediaType" class="w-full p-2 border rounded">
+                                            <option value="image">Image</option>
+                                            <option value="video">Video</option>
+                                            <option value="audio">Audio</option>
+                                            <option value="document">Document</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Recipient (with country code)</label>
+                                        <input type="text" id="mediaMessageRecipient" class="w-full p-2 border rounded" placeholder="911234567890">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Caption (optional)</label>
+                                        <input type="text" id="mediaMessageCaption" class="w-full p-2 border rounded" placeholder="Caption">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">File</label>
+                                        <input type="file" id="mediaFile" class="w-full p-2 border rounded">
+                                    </div>
+                                </div>
+                            </div>
+                            <button onclick="sendMediaMessage()" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                                Try it out
+                            </button>
+                            <div id="media-message-response" class="mt-4"></div>
+                        </div>
+                    </div>
+
+                    <!-- Send Location Message -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-blue-500 text-white px-2 py-1 rounded text-sm">POST</span>
+                                <span class="font-mono">/messages/location</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Send a location message</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Request Body</h4>
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Recipient (with country code)</label>
+                                        <input type="text" id="locationMessageRecipient" class="w-full p-2 border rounded" placeholder="911234567890">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Latitude</label>
+                                        <input type="number" step="any" id="locationLatitude" class="w-full p-2 border rounded" placeholder="12.3456">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Longitude</label>
+                                        <input type="number" step="any" id="locationLongitude" class="w-full p-2 border rounded" placeholder="78.9012">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Name (optional)</label>
+                                        <input type="text" id="locationName" class="w-full p-2 border rounded" placeholder="Location Name">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Address (optional)</label>
+                                        <input type="text" id="locationAddress" class="w-full p-2 border rounded" placeholder="Location Address">
+                                    </div>
+                                </div>
+                            </div>
+                            <button onclick="sendLocationMessage()" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                                Try it out
+                            </button>
+                            <div id="location-message-response" class="mt-4"></div>
+                        </div>
+                    </div>
+
+                    <!-- Send Link Preview -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-blue-500 text-white px-2 py-1 rounded text-sm">POST</span>
+                                <span class="font-mono">/messages/link_preview</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Send a link with preview</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Request Body</h4>
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Recipient (with country code)</label>
+                                        <input type="text" id="linkMessageRecipient" class="w-full p-2 border rounded" placeholder="911234567890">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">URL</label>
+                                        <input type="url" id="linkUrl" class="w-full p-2 border rounded" placeholder="https://example.com">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Title (optional)</label>
+                                        <input type="text" id="linkTitle" class="w-full p-2 border rounded" placeholder="Link Title">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Description (optional)</label>
+                                        <textarea id="linkDescription" class="w-full p-2 border rounded" rows="2" placeholder="Link Description"></textarea>
+                                    </div>
+                                </div>
+                            </div>
+                            <button onclick="sendLinkPreview()" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                                Try it out
+                            </button>
+                            <div id="link-message-response" class="mt-4"></div>
+                        </div>
+                    </div>
+
+                    <!-- Send Sticker -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-blue-500 text-white px-2 py-1 rounded text-sm">POST</span>
+                                <span class="font-mono">/messages/sticker</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Send a sticker</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Request Body</h4>
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Recipient (with country code)</label>
+                                        <input type="text" id="stickerMessageRecipient" class="w-full p-2 border rounded" placeholder="911234567890">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Sticker File (WebP format)</label>
+                                        <input type="file" id="stickerFile" class="w-full p-2 border rounded" accept="image/webp">
+                                    </div>
+                                </div>
+                            </div>
+                            <button onclick="sendSticker()" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                                Try it out
+                            </button>
+                            <div id="sticker-message-response" class="mt-4"></div>
+                        </div>
+                    </div>
+
+                    <!-- Send Story -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-blue-500 text-white px-2 py-1 rounded text-sm">POST</span>
+                                <span class="font-mono">/messages/story</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Send a story</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Request Body</h4>
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Story Type</label>
+                                        <select id="storyType" class="w-full p-2 border rounded" onchange="toggleStoryFields()">
+                                            <option value="text">Text</option>
+                                            <option value="media">Media</option>
+                                        </select>
+                                    </div>
+                                    <div id="storyTextField">
+                                        <label class="block text-sm font-medium mb-1">Text</label>
+                                        <textarea id="storyText" class="w-full p-2 border rounded" rows="3"></textarea>
+                                    </div>
+                                    <div id="storyMediaFields" class="hidden">
+                                        <div>
+                                            <label class="block text-sm font-medium mb-1">Media File</label>
+                                            <input type="file" id="storyFile" class="w-full p-2 border rounded">
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm font-medium mb-1">Caption (optional)</label>
+                                            <input type="text" id="storyCaption" class="w-full p-2 border rounded" placeholder="Caption">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <button onclick="sendStory()" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                                Try it out
+                            </button>
+                            <div id="story-message-response" class="mt-4"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Groups Section -->
+            <div class="bg-white rounded-lg shadow-md overflow-hidden">
+                <div class="bg-purple-600 text-white p-4">
+                    <h2 class="text-xl font-semibold">Groups</h2>
+                </div>
+                <div class="divide-y">
+                    <!-- Get All Groups -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-green-500 text-white px-2 py-1 rounded text-sm">GET</span>
+                                <span class="font-mono">/groups</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Get all groups</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Parameters</h4>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Device ID</label>
+                                    <input type="text" id="getAllGroupsDeviceId" placeholder="Enter device ID">
+                                </div>
+                            </div>
+                            <button onclick="getAllGroups()" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                                Try it out
+                            </button>
+                            <div id="getAllGroupsResponse" class="mt-4"></div>
+                        </div>
+                    </div>
+
+                    <!-- Create Group -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-blue-500 text-white px-2 py-1 rounded text-sm">POST</span>
+                                <span class="font-mono">/groups</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Create a new group</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Request Body</h4>
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Device ID</label>
+                                        <input type="text" id="deviceSelect" placeholder="Enter device ID">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Group Name</label>
+                                        <input type="text" id="groupName" placeholder="Enter group name">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Participants (comma-separated)</label>
+                                        <input type="text" id="participants" placeholder="number1@s.whatsapp.net,number2@s.whatsapp.net">
+                                    </div>
+                                </div>
+                            </div>
+                            <button onclick="createGroup()" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                                Try it out
+                            </button>
+                            <div id="create-group-response" class="mt-4"></div>
+                        </div>
+                    </div>
+
+                    <!-- Join Group -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-blue-500 text-white px-2 py-1 rounded text-sm">PUT</span>
+                                <span class="font-mono">/groups</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Join a group</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Parameters</h4>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Device ID</label>
+                                    <input type="text" id="joinGroupDeviceId" placeholder="Enter device ID">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Invite Code</label>
+                                    <input type="text" id="joinGroupCode" placeholder="Enter invite code">
+                                </div>
+                            </div>
+                            <button onclick="joinGroup()" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                                Try it out
+                            </button>
+                            <div id="joinGroupResponse" class="mt-4"></div>
+                        </div>
+                    </div>
+
+                    <!-- Get Group Info -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-green-500 text-white px-2 py-1 rounded text-sm">GET</span>
+                                <span class="font-mono">/groups/{groupId}</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Get group information</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Parameters</h4>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Device ID</label>
+                                    <input type="text" id="getGroupInfoDeviceId" placeholder="Enter device ID">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Group ID</label>
+                                    <input type="text" id="getGroupInfoId" placeholder="Enter group ID">
+                                </div>
+                            </div>
+                            <button onclick="getGroupInfo()" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                                Try it out
+                            </button>
+                            <div id="getGroupInfoResponse" class="mt-4"></div>
+                        </div>
+                    </div>
+
+                    <!-- Update Group -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-blue-500 text-white px-2 py-1 rounded text-sm">PUT</span>
+                                <span class="font-mono">/groups/{groupId}</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Update group information</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Parameters</h4>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Device ID</label>
+                                    <input type="text" id="updateGroupDeviceId" placeholder="Enter device ID">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Group ID</label>
+                                    <input type="text" id="updateGroupId" placeholder="Enter group ID">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Name</label>
+                                    <input type="text" id="updateGroupName" placeholder="Enter new name">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Topic</label>
+                                    <input type="text" id="updateGroupTopic" placeholder="Enter new topic">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Announce</label>
+                                    <select id="updateGroupAnnounce">
+                                        <option value="">No change</option>
+                                        <option value="true">True</option>
+                                        <option value="false">False</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Locked</label>
+                                    <select id="updateGroupLocked">
+                                        <option value="">No change</option>
+                                        <option value="true">True</option>
+                                        <option value="false">False</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <button onclick="updateGroup()" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                                Try it out
+                            </button>
+                            <div id="updateGroupResponse" class="mt-4"></div>
+                        </div>
+                    </div>
+
+                    <!-- Leave Group -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-red-500 text-white px-2 py-1 rounded text-sm">DELETE</span>
+                                <span class="font-mono">/groups/{groupId}</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Leave a group</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Parameters</h4>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Device ID</label>
+                                    <input type="text" id="leaveGroupDeviceId" placeholder="Enter device ID">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Group ID</label>
+                                    <input type="text" id="leaveGroupId" placeholder="Enter group ID">
+                                </div>
+                            </div>
+                            <button onclick="leaveGroup()" class="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600">
+                                Try it out
+                            </button>
+                            <div id="leaveGroupResponse" class="mt-4"></div>
+                        </div>
+                    </div>
+
+                    <!-- Get Group Invite Link -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-blue-500 text-white px-2 py-1 rounded text-sm">GET</span>
+                                <span class="font-mono">/groups/{groupId}/invite</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Get group invite link</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Parameters</h4>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Device ID</label>
+                                    <input type="text" id="getInviteLinkDeviceId" placeholder="Enter device ID">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Group ID</label>
+                                    <input type="text" id="getInviteLinkGroupId" placeholder="Enter group ID">
+                                </div>
+                            </div>
+                            <button onclick="getGroupInviteLink()" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                                Try it out
+                            </button>
+                            <div id="getInviteLinkResponse" class="mt-4"></div>
+                        </div>
+                    </div>
+
+                    <!-- Revoke Group Invite Link -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-red-500 text-white px-2 py-1 rounded text-sm">DELETE</span>
+                                <span class="font-mono">/groups/{groupId}/invite</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Revoke group invite link</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Parameters</h4>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Device ID</label>
+                                    <input type="text" id="revokeInviteLinkDeviceId" placeholder="Enter device ID">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Group ID</label>
+                                    <input type="text" id="revokeInviteLinkGroupId" placeholder="Enter group ID">
+                                </div>
+                            </div>
+                            <button onclick="revokeGroupInviteLink()" class="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600">
+                                Try it out
+                            </button>
+                            <div id="revokeInviteLinkResponse" class="mt-4"></div>
+                        </div>
+                    </div>
+
+                    <!-- Add Participants -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-green-500 text-white px-2 py-1 rounded text-sm">POST</span>
+                                <span class="font-mono">/groups/{groupId}/participants</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Add participants to a group</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Parameters</h4>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Device ID</label>
+                                    <input type="text" id="addParticipantsDeviceId" placeholder="Enter device ID">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Group ID</label>
+                                    <input type="text" id="addParticipantsGroupId" placeholder="Enter group ID">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Participants (comma-separated)</label>
+                                    <input type="text" id="addParticipantsList" placeholder="number1@s.whatsapp.net,number2@s.whatsapp.net">
+                                </div>
+                            </div>
+                            <button onclick="addGroupParticipants()" class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600">
+                                Try it out
+                            </button>
+                            <div id="addParticipantsResponse" class="mt-4"></div>
+                        </div>
+                    </div>
+
+                    <!-- Remove Participants -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-red-500 text-white px-2 py-1 rounded text-sm">DELETE</span>
+                                <span class="font-mono">/groups/{groupId}/participants</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Remove participants from a group</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Parameters</h4>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Device ID</label>
+                                    <input type="text" id="removeParticipantsDeviceId" placeholder="Enter device ID">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Group ID</label>
+                                    <input type="text" id="removeParticipantsGroupId" placeholder="Enter group ID">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Participants (comma-separated)</label>
+                                    <input type="text" id="removeParticipantsList" placeholder="number1@s.whatsapp.net,number2@s.whatsapp.net">
+                                </div>
+                            </div>
+                            <button onclick="removeGroupParticipants()" class="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600">
+                                Try it out
+                            </button>
+                            <div id="removeParticipantsResponse" class="mt-4"></div>
+                        </div>
+                    </div>
+
+                    <!-- Get Group Icon -->
+                    <div class="p-4">
+                        <div class="flex items-center justify-between cursor-pointer endpoint-header" onclick="toggleEndpoint(this)">
+                            <div class="flex items-center space-x-2">
+                                <span class="bg-purple-500 text-white px-2 py-1 rounded text-sm">GET</span>
+                                <span class="font-mono">/groups/{groupId}/icon</span>
+                            </div>
+                            <span class="text-sm text-gray-600">Get group icon</span>
+                        </div>
+                        <div class="endpoint-content hidden mt-4">
+                            <div class="bg-gray-100 p-4 rounded mb-4">
+                                <h4 class="font-semibold mb-2">Parameters</h4>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Device ID</label>
+                                    <input type="text" id="getGroupIconDeviceId" placeholder="Enter device ID">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Group ID</label>
+                                    <input type="text" id="getGroupIconId" placeholder="Enter group ID">
+                                </div>
+                            </div>
+                            <button onclick="getGroupIcon()" class="bg-purple-500 text-white px-4 py-2 rounded hover:bg-purple-600">
+                                Try it out
+                            </button>
+                            <div id="getGroupIconResponse" class="mt-4"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"></script>
+    <script>
+        let ws;
+        let deviceMap = new Map();
+
+        function initWebSocket() {
+            ws = new WebSocket(`ws://${window.location.host}/ws`);
+            
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                loadDevices();
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                console.log('WebSocket message received:', data);
+                
+                if (data.type === 'status') {
+                    updateDeviceStatus(data);
+                }
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket disconnected');
+                setTimeout(() => {
+                    console.log('Attempting to reconnect...');
+                    initWebSocket();
+                }, 2000);
+            };
+        }
+
+        async function loadDevices() {
+            try {
+                const response = await fetch('/devices');
+                const devices = await response.json();
+                console.log('Loaded devices:', devices);
+
+                const deviceSelect = document.getElementById('deviceSelect');
+                deviceSelect.innerHTML = '<option value="">Select a device...</option>';
+
+                if (devices.length === 0) {
+                    console.log('No devices found');
+                    document.getElementById('deviceStatus').textContent = 'No devices connected';
+                    return;
+                }
+
+                devices.forEach(device => {
+                    const option = document.createElement('option');
+                    option.value = device.JID;
+                    option.textContent = `${device.PushName || 'Unknown'} (${device.JID})`;
+                    deviceSelect.appendChild(option);
+                    deviceMap.set(device.JID, device);
+                });
+
+                updateDeviceStatusDisplay();
+            } catch (error) {
+                console.error('Error loading devices:', error);
+                document.getElementById('deviceStatus').textContent = 'Error loading devices';
+            }
+        }
+
+        function updateDeviceStatus(data) {
+            console.log('Updating device status:', data);
+            if (!data.deviceInfo || !data.deviceInfo.JID) {
+                console.warn('Invalid device data received:', data);
+                return;
+            }
+
+            const device = data.deviceInfo;
+            deviceMap.set(device.JID, device);
+            updateDeviceStatusDisplay();
+        }
+
+        function updateDeviceStatusDisplay() {
+            const deviceSelect = document.getElementById('deviceSelect');
+            const selectedDevice = deviceMap.get(deviceSelect.value);
+            
+            if (selectedDevice) {
+                const status = selectedDevice.Connected ? 'Connected' : 'Disconnected';
+                const color = selectedDevice.Connected ? 'text-green-500' : 'text-red-500';
+                document.getElementById('deviceStatus').className = color;
+                document.getElementById('deviceStatus').textContent = status;
+            }
+        }
+
+        // Add event listener for device selection change
+        document.getElementById('deviceSelect').addEventListener('change', updateDeviceStatusDisplay);
+
+        // QR Code Modal functions
+        function showQRModal() {
+            document.getElementById('qrModal').classList.remove('hidden');
+            generateQRCode();
+        }
+
+        function hideQRModal() {
+            document.getElementById('qrModal').classList.add('hidden');
+            document.getElementById('qrCanvas').classList.add('hidden');
+            document.getElementById('qrStatus').textContent = 'Generating QR code...';
+        }
+
+        async function generateQRCode() {
+            try {
+                const response = await fetch('/qr');
+                const data = await response.json();
+                
+                if (data.error) {
+                    document.getElementById('qrStatus').textContent = data.error;
+                    return;
+                }
+
+                handleQRCode(data.qr);
+            } catch (error) {
+                document.getElementById('qrStatus').textContent = 'Error generating QR code';
+                console.error('Error:', error);
+            }
+        }
+
+        function handleQRCode(qrData) {
+            const canvas = document.getElementById('qrCanvas');
+            const statusText = document.getElementById('qrStatus');
+
+            if (!qrData || !qrData.code) {
+                statusText.textContent = 'Invalid QR code data';
+                return;
+            }
+
+            QRCode.toCanvas(canvas, qrData.code, {
+                width: 256,
+                margin: 1,
+                color: {
+                    dark: '#000000',
+                    light: '#ffffff'
+                }
+            }).then(() => {
+                canvas.classList.remove('hidden');
+                statusText.textContent = 'Scan this QR code with WhatsApp';
+            }).catch(err => {
+                statusText.textContent = 'Error generating QR code';
+                console.error(err);
+            });
+        }
+
+        // Toggle endpoint content
+        function toggleEndpoint(element) {
+            const content = element.parentElement.querySelector('.endpoint-content');
+            content.classList.toggle('hidden');
+        }
+
+        // Helper function to format JSON responses
+        function formatResponse(element, data, success = true) {
+            element.innerHTML = `
+                <div class="p-4 rounded ${success ? 'bg-green-50' : 'bg-red-50'}">
+                    <pre><code class="language-json">${JSON.stringify(data, null, 2)}</code></pre>
+                </div>
+            `;
+            Prism.highlightAll();
+        }
+
+        // Test specific endpoint
+        async function testEndpoint(endpoint) {
+            const deviceId = document.getElementById('deviceSelect').value;
+            if (!deviceId) {
+                alert('Please select a device first');
+                return;
+            }
+
+            switch (endpoint) {
+                case 'qr':
+                    // Implementation for QR code generation
+                    break;
+                case 'logout':
+                    try {
+                        const response = await fetch(`/logout/${deviceId}`, {
+                            method: 'POST'
+                        });
+                        const data = await response.json();
+                        formatResponse(document.getElementById('logout-response'), data, response.ok);
+                    } catch (error) {
+                        formatResponse(document.getElementById('logout-response'), { error: error.message }, false);
+                    }
+                    break;
+            }
+        }
+
+        // Get all messages
+        async function getMessages() {
+            const deviceId = document.getElementById('deviceSelect').value;
+            if (!deviceId) {
+                alert('Please select a device first');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/messages/list?deviceId=${deviceId}`);
+                const data = await response.json();
+                formatResponse(document.getElementById('messages-response'), data, response.ok);
+            } catch (error) {
+                formatResponse(document.getElementById('messages-response'), { error: error.message }, false);
+            }
+        }
+
+        // Get messages by chat
+        async function getMessagesByChat() {
+            const deviceId = document.getElementById('deviceSelect').value;
+            const chatId = document.getElementById('chatMessagesId').value;
+            if (!deviceId) {
+                alert('Please select a device first');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/messages/list/${chatId}?deviceId=${deviceId}`);
+                const data = await response.json();
+                formatResponse(document.getElementById('chat-messages-response'), data, response.ok);
+            } catch (error) {
+                formatResponse(document.getElementById('chat-messages-response'), { error: error.message }, false);
+            }
+        }
+
+        // Send text message
+        async function sendTextMessage() {
+            const deviceId = document.getElementById('deviceSelect').value;
+            const recipient = document.getElementById('textMessageRecipient').value;
+            const message = document.getElementById('textMessageContent').value;
+            
+            if (!deviceId) {
+                alert('Please select a device first');
+                return;
+            }
+
+            try {
+                const response = await fetch('/messages/text', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        deviceId,
+                        to: recipient + '@s.whatsapp.net',
+                        message
+                    })
+                });
+                const data = await response.json();
+                formatResponse(document.getElementById('text-message-response'), data, response.ok);
+            } catch (error) {
+                formatResponse(document.getElementById('text-message-response'), { error: error.message }, false);
+            }
+        }
+
+        // Send media message
+        async function sendMediaMessage() {
+            const deviceId = document.getElementById('deviceSelect').value;
+            const recipient = document.getElementById('mediaMessageRecipient').value;
+            const caption = document.getElementById('mediaMessageCaption').value;
+            const mediaType = document.getElementById('mediaType').value;
+            const fileInput = document.getElementById('mediaFile');
+            
+            if (!deviceId) {
+                alert('Please select a device first');
+                return;
+            }
+
+            if (!fileInput.files || !fileInput.files[0]) {
+                alert('Please select a file');
+                return;
+            }
+
+            try {
+                const file = fileInput.files[0];
+                const reader = new FileReader();
+                reader.onload = async function(e) {
+                    const base64Data = e.target.result.split(',')[1];
+                    
+                    const response = await fetch(`/messages/${mediaType}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            deviceId,
+                            to: recipient + '@s.whatsapp.net',
+                            caption,
+                            file: base64Data
+                        })
+                    });
+                    const data = await response.json();
+                    formatResponse(document.getElementById('media-message-response'), data, response.ok);
+                };
+                reader.readAsDataURL(file);
+            } catch (error) {
+                formatResponse(document.getElementById('media-message-response'), { error: error.message }, false);
+            }
+        }
+
+        // Send location message
+        async function sendLocationMessage() {
+            const deviceId = document.getElementById('deviceSelect').value;
+            const recipient = document.getElementById('locationMessageRecipient').value;
+            const latitude = parseFloat(document.getElementById('locationLatitude').value);
+            const longitude = parseFloat(document.getElementById('locationLongitude').value);
+            const name = document.getElementById('locationName').value;
+            const address = document.getElementById('locationAddress').value;
+            
+            if (!deviceId) {
+                alert('Please select a device first');
+                return;
+            }
+
+            try {
+                const response = await fetch('/messages/location', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        deviceId,
+                        to: recipient + '@s.whatsapp.net',
+                        latitude,
+                        longitude,
+                        name,
+                        address
+                    })
+                });
+                const data = await response.json();
+                formatResponse(document.getElementById('location-message-response'), data, response.ok);
+            } catch (error) {
+                formatResponse(document.getElementById('location-message-response'), { error: error.message }, false);
+            }
+        }
+
+        // Send link preview
+        async function sendLinkPreview() {
+            const deviceId = document.getElementById('deviceSelect').value;
+            const recipient = document.getElementById('linkMessageRecipient').value;
+            const url = document.getElementById('linkUrl').value;
+            const title = document.getElementById('linkTitle').value;
+            const description = document.getElementById('linkDescription').value;
+            
+            if (!deviceId) {
+                alert('Please select a device first');
+                return;
+            }
+
+            try {
+                const response = await fetch('/messages/link_preview', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        deviceId,
+                        to: recipient + '@s.whatsapp.net',
+                        url,
+                        title,
+                        description
+                    })
+                });
+                const data = await response.json();
+                formatResponse(document.getElementById('link-message-response'), data, response.ok);
+            } catch (error) {
+                formatResponse(document.getElementById('link-message-response'), { error: error.message }, false);
+            }
+        }
+
+        // Group Management Functions
+        async function getAllGroups() {
+            const deviceId = document.getElementById('getAllGroupsDeviceId').value;
+            const response = await fetch(`/groups?deviceId=${deviceId}`);
+            const data = await response.json();
+            document.getElementById('getAllGroupsResponse').textContent = JSON.stringify(data, null, 2);
+        }
+
+        async function createGroup() {
+            const deviceId = document.getElementById('deviceSelect').value;
+            const groupName = document.getElementById('groupName').value;
+            const participants = document.getElementById('participants').value.split(',').map(p => p.trim() + '@s.whatsapp.net');
+            
+            if (!deviceId) {
+                alert('Please select a device first');
+                return;
+            }
+
+            try {
+                const response = await fetch('/groups', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        DeviceID: deviceId,
+                        Name: groupName,
+                        Participants: participants
+                    })
+                });
+                const data = await response.json();
+                formatResponse(document.getElementById('create-group-response'), data, response.ok);
+            } catch (error) {
+                formatResponse(document.getElementById('create-group-response'), { error: error.message }, false);
+            }
+        }
+
+        async function joinGroup() {
+            const deviceId = document.getElementById('joinGroupDeviceId').value;
+            const code = document.getElementById('joinGroupCode').value;
+            
+            const response = await fetch(`/groups?deviceId=${deviceId}&code=${code}`, {
+                method: 'PUT'
+            });
+            const data = await response.json();
+            document.getElementById('joinGroupResponse').textContent = JSON.stringify(data, null, 2);
+        }
+
+        async function getGroupInfo() {
+            const deviceId = document.getElementById('getGroupInfoDeviceId').value;
+            const groupId = document.getElementById('getGroupInfoId').value;
+            
+            const response = await fetch(`/groups/${groupId}?deviceId=${deviceId}`);
+            const data = await response.json();
+            document.getElementById('getGroupInfoResponse').textContent = JSON.stringify(data, null, 2);
+        }
+
+        async function updateGroup() {
+            const deviceId = document.getElementById('updateGroupDeviceId').value;
+            const groupId = document.getElementById('updateGroupId').value;
+            const name = document.getElementById('updateGroupName').value;
+            const topic = document.getElementById('updateGroupTopic').value;
+            const announce = document.getElementById('updateGroupAnnounce').value;
+            const locked = document.getElementById('updateGroupLocked').value;
+            
+            const updateData = {};
+            if (name) updateData.name = name;
+            if (topic) updateData.topic = topic;
+            if (announce) updateData.announce = announce === 'true';
+            if (locked) updateData.locked = locked === 'true';
+            
+            const response = await fetch(`/groups/${groupId}?deviceId=${deviceId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(updateData)
+            });
+            const data = await response.json();
+            document.getElementById('updateGroupResponse').textContent = JSON.stringify(data, null, 2);
+        }
+
+        async function leaveGroup() {
+            const deviceId = document.getElementById('leaveGroupDeviceId').value;
+            const groupId = document.getElementById('leaveGroupId').value;
+            
+            const response = await fetch(`/groups/${groupId}?deviceId=${deviceId}`, {
+                method: 'DELETE'
+            });
+            const data = await response.json();
+            document.getElementById('leaveGroupResponse').textContent = JSON.stringify(data, null, 2);
+        }
+
+        async function getGroupInviteLink() {
+            const deviceId = document.getElementById('getInviteLinkDeviceId').value;
+            const groupId = document.getElementById('getInviteLinkGroupId').value;
+            
+            const response = await fetch(`/groups/${groupId}/invite?deviceId=${deviceId}`);
+            const data = await response.json();
+            document.getElementById('getInviteLinkResponse').textContent = JSON.stringify(data, null, 2);
+        }
+
+        async function revokeGroupInviteLink() {
+            const deviceId = document.getElementById('revokeInviteLinkDeviceId').value;
+            const groupId = document.getElementById('revokeInviteLinkGroupId').value;
+            
+            const response = await fetch(`/groups/${groupId}/invite?deviceId=${deviceId}`, {
+                method: 'DELETE'
+            });
+            const data = await response.json();
+            document.getElementById('revokeInviteLinkResponse').textContent = JSON.stringify(data, null, 2);
+        }
+
+        async function addGroupParticipants() {
+            const deviceId = document.getElementById('addParticipantsDeviceId').value;
+            const groupId = document.getElementById('addParticipantsGroupId').value;
+            const participants = document.getElementById('addParticipantsList').value.split(',');
+            
+            const response = await fetch(`/groups/${groupId}/participants`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ deviceId, groupId, participants })
+            });
+            const data = await response.json();
+            document.getElementById('addParticipantsResponse').textContent = JSON.stringify(data, null, 2);
+        }
+
+        async function removeGroupParticipants() {
+            const deviceId = document.getElementById('removeParticipantsDeviceId').value;
+            const groupId = document.getElementById('removeParticipantsGroupId').value;
+            const participants = document.getElementById('removeParticipantsList').value.split(',');
+            
+            const response = await fetch(`/groups/${groupId}/participants`, {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ deviceId, groupId, participants })
+            });
+            const data = await response.json();
+            document.getElementById('removeParticipantsResponse').textContent = JSON.stringify(data, null, 2);
+        }
+
+        async function getGroupIcon() {
+            const deviceId = document.getElementById('getGroupIconDeviceId').value;
+            const groupId = document.getElementById('getGroupIconId').value;
+            
+            const response = await fetch(`/groups/${groupId}/icon?deviceId=${deviceId}`);
+            const data = await response.json();
+            document.getElementById('getGroupIconResponse').textContent = JSON.stringify(data, null, 2);
+        }
+
+        // Send sticker
+        async function sendSticker() {
+            const deviceId = document.getElementById('deviceSelect').value;
+            const recipient = document.getElementById('stickerMessageRecipient').value;
+            const fileInput = document.getElementById('stickerFile');
+            
+            if (!deviceId) {
+                alert('Please select a device first');
+                return;
+            }
+
+            if (!fileInput.files || !fileInput.files[0]) {
+                alert('Please select a sticker file');
+                return;
+            }
+
+            try {
+                const file = fileInput.files[0];
+                const reader = new FileReader();
+                reader.onload = async function(e) {
+                    const base64Data = e.target.result.split(',')[1];
+                    
+                    const response = await fetch('/messages/sticker', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            deviceId,
+                            to: recipient + '@s.whatsapp.net',
+                            file: base64Data
+                        })
+                    });
+                    const data = await response.json();
+                    formatResponse(document.getElementById('sticker-message-response'), data, response.ok);
+                };
+                reader.readAsDataURL(file);
+            } catch (error) {
+                formatResponse(document.getElementById('sticker-message-response'), { error: error.message }, false);
+            }
+        }
+
+        function toggleStoryFields() {
+            const storyType = document.getElementById('storyType').value;
+            const textField = document.getElementById('storyTextField');
+            const mediaFields = document.getElementById('storyMediaFields');
+            
+            if (storyType === 'text') {
+                textField.classList.remove('hidden');
+                mediaFields.classList.add('hidden');
+            } else {
+                textField.classList.add('hidden');
+                mediaFields.classList.remove('hidden');
+            }
+        }
+
+        async function sendStory() {
+            const deviceId = document.getElementById('deviceSelect').value;
+            const storyType = document.getElementById('storyType').value;
+            
+            if (!deviceId) {
+                alert('Please select a device first');
+                return;
+            }
+
+            try {
+                let requestBody = { deviceId };
+
+                if (storyType === 'text') {
+                    const text = document.getElementById('storyText').value.trim();
+                    if (!text) {
+                        alert('Please enter story text');
+                        return;
+                    }
+                    requestBody.text = text;
+                } else {
+                    const fileInput = document.getElementById('storyFile');
+                    if (!fileInput.files || !fileInput.files[0]) {
+                        alert('Please select a file');
+                        return;
+                    }
+
+                    const file = fileInput.files[0];
+                    const caption = document.getElementById('storyCaption').value.trim();
+                    
+                    const reader = new FileReader();
+                    reader.onload = async function(e) {
+                        const base64Data = e.target.result.split(',')[1];
+                        requestBody.file = base64Data;
+                        if (caption) {
+                            requestBody.caption = caption;
+                        }
+                        
+                        const response = await fetch('/messages/story', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(requestBody)
+                        });
+                        const data = await response.json();
+                        formatResponse(document.getElementById('story-message-response'), data, response.ok);
+                    };
+                    reader.readAsDataURL(file);
+                    return;
+                }
+
+                const response = await fetch('/messages/story', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestBody)
+                });
+                const data = await response.json();
+                formatResponse(document.getElementById('story-message-response'), data, response.ok);
+            } catch (error) {
+                formatResponse(document.getElementById('story-message-response'), { error: error.message }, false);
+            }
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            initWebSocket();
+            Prism.highlightAll();
+        });
+    </script>
+</body>
+</html> 
