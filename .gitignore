@@ -36,4 +36,7 @@ go.work
 .Spotlight-V100
 .Trashes
 ehthumbs.db
-Thumbs.db 
+Thumbs.db
+
+# Exclude sensitive files
+waani 
