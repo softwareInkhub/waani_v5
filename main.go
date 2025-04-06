@@ -200,6 +200,15 @@ func parseJID(jidStr string) (watypes.JID, error) {
 	return watypes.ParseJID(jidStr)
 }
 
+// Helper function to parse time from RFC3339 string
+func parseTime(timeStr string) time.Time {
+	t, err := time.Parse(time.RFC3339, timeStr)
+	if err != nil {
+		return time.Now() // Return current time as fallback
+	}
+	return t
+}
+
 func initMongoDB() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -379,6 +388,37 @@ func setupWhatsAppClient(client *whatsmeow.Client) *WhatsAppClient {
 	// Enable auto-reconnect
 	client.EnableAutoReconnect = true
 
+	// Load existing messages from DynamoDB if client is already connected
+	if client.Store.ID != nil {
+		// Load messages in background to not block setup
+		go func() {
+			messages, err := db.GetMessages(client.Store.ID.String(), "", 1000) // Get last 1000 messages
+			if err != nil {
+				log.Printf("Error loading messages from DynamoDB: %v", err)
+				return
+			}
+			
+			// Convert and store messages in memory
+			waClient.MessagesMux.Lock()
+			for _, msg := range messages {
+				messageInfo := MessageInfo{
+					ID:        msg.ID,
+					FromMe:    msg.FromMe,
+					Timestamp: parseTime(msg.Timestamp),
+					PushName:  msg.PushName,
+					Message:   msg.Content,
+					Type:      msg.Type,
+					ChatID:    msg.ChatID,
+					SenderID:  msg.SenderID,
+				}
+				waClient.Messages[msg.ChatID] = append(waClient.Messages[msg.ChatID], messageInfo)
+			}
+			waClient.MessagesMux.Unlock()
+			
+			log.Printf("Loaded %d messages from DynamoDB for device %s", len(messages), client.Store.ID)
+		}()
+	}
+
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
 		case *events.QR:
@@ -464,13 +504,24 @@ func setupWhatsAppClient(client *whatsmeow.Client) *WhatsAppClient {
 					continue
 				}
 
+				log.Printf("Processing history sync for chat %s with %d messages", chatJID.String(), len(conv.GetMessages()))
 				for _, msg := range conv.GetMessages() {
 					evt, err := client.ParseWebMessage(chatJID, msg.GetMessage())
 					if err != nil {
 						log.Printf("Error parsing message from history sync: %v", err)
 						continue
 					}
+					
+					// Store the message
 					waClient.storeMessage(evt)
+					
+					// Broadcast to connected clients that we received historical messages
+					broadcastToClients(map[string]interface{}{
+						"type":     "history_sync",
+						"deviceId": client.Store.ID.String(),
+						"chatId":   chatJID.String(),
+						"message":  evt,
+					})
 				}
 			}
 		}
@@ -544,57 +595,75 @@ func getClientByDeviceId(deviceId string) *whatsmeow.Client {
 }
 
 func handleGetGroups(c *gin.Context) {
-	deviceId := c.Param("deviceId")
-	saveGroups := c.Query("save") == "true"
+    deviceId := c.Query("deviceId")
+    saveGroups := c.Query("save") == "true"
 
-	log.Printf("Fetching groups for device %s", deviceId)
-	
-	client := getClientByDeviceId(deviceId)
-	if client == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Device not found"})
-		return
-	}
+    if deviceId == "" {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId is required"})
+        return
+    }
 
-	groups, err := client.GetJoinedGroups()
-	if err != nil {
-		log.Printf("Error getting groups: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
+    waClientsMux.RLock()
+    waClient := waClients[deviceId]
+    waClientsMux.RUnlock()
 
-	log.Printf("Found %d groups", len(groups))
+    if waClient == nil || waClient.Client == nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "device not connected"})
+        return
+    }
 
-	// Save groups to DynamoDB if requested
-	if saveGroups {
-		for _, group := range groups {
-			dbGroup := db.Group{
-				ID:           group.JID.String(),
-				Name:         group.Name,
-				Participants: len(group.Participants),
-				DeviceID:     deviceId,
-				CreatedAt:    time.Now().Format(time.RFC3339),
-				UpdatedAt:    time.Now().Format(time.RFC3339),
-			}
+    // Rate limit check
+    if !groupInfoLimiter.Allow() {
+        c.JSON(http.StatusTooManyRequests, gin.H{"error": "rate limit exceeded"})
+        return
+    }
 
-			if err := db.SaveGroup(dbGroup); err != nil {
-				log.Printf("Error saving group to DynamoDB: %v", err)
-			}
-		}
-	}
+    groups, err := waClient.Client.GetJoinedGroups()
+    if err != nil {
+        log.Printf("Error getting groups: %v", err)
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
 
-	// Return groups to client
-	var groupList []map[string]interface{}
-	for _, group := range groups {
-		groupList = append(groupList, map[string]interface{}{
-			"id": group.JID.String(),
-			"name": group.Name,
-			"participants": len(group.Participants),
-			"owner": group.OwnerJID.String(),
-			"creation": group.GroupCreated.Unix(),
-		})
-	}
+    log.Printf("Found %d groups", len(groups))
 
-	c.JSON(http.StatusOK, groupList)
+    // Save groups to DynamoDB if requested
+    if saveGroups {
+        for _, group := range groups {
+            dbGroup := db.Group{
+                ID:           group.JID.String(),
+                Name:         group.Name,
+                Participants: len(group.Participants),
+                DeviceID:     deviceId,
+                CreatedAt:    time.Now().Format(time.RFC3339),
+                UpdatedAt:    time.Now().Format(time.RFC3339),
+            }
+
+            if err := db.SaveGroup(dbGroup); err != nil {
+                log.Printf("Error saving group to DynamoDB: %v", err)
+            }
+        }
+    }
+
+    // Return groups to client
+    var groupList []map[string]interface{}
+    for _, group := range groups {
+        groupList = append(groupList, map[string]interface{}{
+            "id":           group.JID.String(),
+            "name":         group.Name,
+            "participants": len(group.Participants),
+            "owner":        group.OwnerJID.String(),
+            "creation":     group.GroupCreated.Unix(),
+        })
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "status": "success",
+        "data": gin.H{
+            "groups": groupList,
+        },
+        "message": fmt.Sprintf("Retrieved %d groups", len(groupList)),
+    })
 }
 
 func handleSendMessage(c *gin.Context) {
@@ -604,8 +673,11 @@ func handleSendMessage(c *gin.Context) {
 		return
 	}
 
-	client := getClientByDeviceId(req.DeviceID)
-	if client == nil {
+	waClientsMux.RLock()
+	waClient := waClients[req.DeviceID]
+	waClientsMux.RUnlock()
+
+	if waClient == nil || waClient.Client == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Device not found"})
 		return
 	}
@@ -620,23 +692,43 @@ func handleSendMessage(c *gin.Context) {
 		Conversation: proto.String(req.Message),
 	}
 
-	resp, err := client.SendMessage(context.Background(), recipient, msg)
+	resp, err := waClient.Client.SendMessage(context.Background(), recipient, msg)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
+	// Create message info
+	messageInfo := MessageInfo{
+		ID:        resp.ID,
+		FromMe:    true,
+		Timestamp: time.Now(),
+		PushName:  waClient.Client.Store.PushName,
+		Message:   req.Message,
+		Type:      "text",
+		ChatID:    recipient.String(),
+		SenderID:  req.DeviceID,
+	}
+
+	// Store in memory
+	waClient.MessagesMux.Lock()
+	if waClient.Messages == nil {
+		waClient.Messages = make(map[string][]MessageInfo)
+	}
+	waClient.Messages[recipient.String()] = append(waClient.Messages[recipient.String()], messageInfo)
+	waClient.MessagesMux.Unlock()
+
 	// Save message to DynamoDB
 	message := db.Message{
 		ID:        resp.ID,
 		DeviceID:  req.DeviceID,
-		ChatID:    req.To,
+		ChatID:    recipient.String(),
 		Type:      "text",
 		Content:   req.Message,
 		Timestamp: time.Now().Format(time.RFC3339),
 		FromMe:    true,
 		SenderID:  req.DeviceID,
-		PushName:  client.Store.PushName,
+		PushName:  waClient.Client.Store.PushName,
 	}
 
 	if err := db.SaveMessage(message); err != nil {
@@ -994,10 +1086,10 @@ func handleGetChats(c *gin.Context) {
 // GET /chats/{ChatID} - Get specific chat
 func handleGetChat(c *gin.Context) {
     deviceID := c.Query("deviceId")
-    chatID := c.Param("ChatID")
+    chatID := c.Param("chatId")
 
-    if deviceID == "" || chatID == "" {
-        c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId and chatId are required"})
+    if deviceID == "" {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId is required"})
         return
     }
 
@@ -1039,22 +1131,35 @@ func handleGetChat(c *gin.Context) {
         // Get contact info
         contact, err := client.Client.Store.Contacts.GetContact(jid)
         if err != nil {
-            c.JSON(http.StatusNotFound, gin.H{"error": "chat not found"})
-            return
+            // If contact not found, just use the JID as name
+            chat = Chat{
+                ID:         jid.String(),
+                Name:       jid.User,
+                IsGroup:    false,
+                IsArchived: false,
+                IsMuted:    false,
+                IsPinned:   false,
+            }
+        } else {
+            chat = Chat{
+                ID:         jid.String(),
+                Name:       contact.FullName,
+                IsGroup:    false,
+                IsArchived: false,
+                IsMuted:    false,
+                IsPinned:   false,
+            }
         }
-        timestamp := time.Now()
-        chat = Chat{
-            ID:         jid.String(),
-            Name:       contact.FullName,
-            Timestamp:  &timestamp,
-            IsGroup:    false,
-            IsArchived: false,
-            IsMuted:    false,
-            IsPinned:   false,
-        }
+        // Set current time as timestamp
+        now := time.Now()
+        chat.Timestamp = &now
     }
 
-    c.JSON(http.StatusOK, chat)
+    c.JSON(http.StatusOK, gin.H{
+        "status": "success",
+        "data": chat,
+        "message": "Chat retrieved successfully",
+    })
 }
 
 // DELETE /chats/{ChatID} - Delete chat
@@ -1191,6 +1296,7 @@ func (wa *WhatsAppClient) storeMessage(evt *events.Message) {
 		messageType = "unknown"
 	}
 
+	chatID := evt.Info.Chat.String()
 	messageInfo := MessageInfo{
 		ID:        evt.Info.ID,
 		FromMe:    evt.Info.IsFromMe,
@@ -1198,16 +1304,25 @@ func (wa *WhatsAppClient) storeMessage(evt *events.Message) {
 		PushName:  evt.Info.PushName,
 		Message:   messageContent,
 		Type:      messageType,
-		ChatID:    evt.Info.Chat.String(),
+		ChatID:    chatID,
 		SenderID:  evt.Info.Sender.String(),
 	}
+
+	// Store in memory
+	wa.MessagesMux.Lock()
+	if wa.Messages == nil {
+		wa.Messages = make(map[string][]MessageInfo)
+	}
+	wa.Messages[chatID] = append(wa.Messages[chatID], messageInfo)
+	log.Printf("Stored message in memory for chat %s (total messages: %d)", chatID, len(wa.Messages[chatID]))
+	wa.MessagesMux.Unlock()
 
 	// Store message in DynamoDB if available
 	if config.DynamoDBClient != nil {
 		message := db.Message{
 			ID:        evt.Info.ID,
 			DeviceID:  wa.Client.Store.ID.String(),
-			ChatID:    evt.Info.Chat.String(),
+			ChatID:    chatID,
 			Type:      messageType,
 			Content:   messageContent,
 			Timestamp: evt.Info.Timestamp.Format(time.RFC3339),
@@ -1218,11 +1333,13 @@ func (wa *WhatsAppClient) storeMessage(evt *events.Message) {
 
 		if err := db.SaveMessage(message); err != nil {
 			log.Printf("Warning: Failed to save message to DynamoDB: %v", err)
+		} else {
+			log.Printf("Successfully saved message to DynamoDB for chat %s", chatID)
 		}
 
 		// Also store/update chat
 		chat := db.Chat{
-			ID:          evt.Info.Chat.String(),
+			ID:          chatID,
 			DeviceID:    wa.Client.Store.ID.String(),
 			Name:        evt.Info.PushName,
 			Type:        "private",
@@ -1234,15 +1351,6 @@ func (wa *WhatsAppClient) storeMessage(evt *events.Message) {
 			log.Printf("Warning: Failed to save chat to DynamoDB: %v", err)
 		}
 	}
-
-	// Store in memory for immediate access
-	wa.MessagesMux.Lock()
-	defer wa.MessagesMux.Unlock()
-	
-	if wa.Messages == nil {
-		wa.Messages = make(map[string][]MessageInfo)
-	}
-	wa.Messages[evt.Info.Chat.String()] = append(wa.Messages[evt.Info.Chat.String()], messageInfo)
 }
 
 func handleGetMessages(c *gin.Context) {
@@ -1257,16 +1365,19 @@ func handleGetMessages(c *gin.Context) {
         }
     }
 
+    log.Printf("Getting messages for device: %s, chat: %s, before: %s, limit: %d", deviceId, chatId, beforeId, limit)
+
     if deviceId == "" {
         c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId is required"})
         return
     }
 
     waClientsMux.RLock()
-    client := waClients[deviceId]
+    waClient := waClients[deviceId]
     waClientsMux.RUnlock()
 
-    if client == nil {
+    if waClient == nil || waClient.Client == nil {
+        log.Printf("Device not found: %s", deviceId)
         c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
         return
     }
@@ -1274,91 +1385,100 @@ func handleGetMessages(c *gin.Context) {
     // If chatId is provided, get messages for that specific chat
     if chatId != "" {
         // Validate chat JID
-        if _, err := parseJID(chatId); err != nil {
+        chatJID, err := parseJID(chatId)
+        if err != nil {
+            log.Printf("Invalid chat JID: %s, error: %v", chatId, err)
             c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chat JID"})
             return
         }
 
         // Get messages from memory first
-        client.MessagesMux.RLock()
-        messages := client.Messages[chatId]
-        client.MessagesMux.RUnlock()
+        waClient.MessagesMux.RLock()
+        messages, exists := waClient.Messages[chatId]
+        if !exists {
+            messages = []MessageInfo{}
+        }
+        waClient.MessagesMux.RUnlock()
+
+        log.Printf("Found %d messages in memory for chat %s", len(messages), chatId)
 
         // Sort messages by timestamp in descending order (newest first)
         sort.Slice(messages, func(i, j int) bool {
             return messages[i].Timestamp.After(messages[j].Timestamp)
         })
 
-        // Filter messages before the given ID if specified
-        if beforeId != "" {
-            var beforeTime time.Time
-            for _, msg := range messages {
-                if msg.ID == beforeId {
-                    beforeTime = msg.Timestamp
-                    break
-                }
-            }
-            if !beforeTime.IsZero() {
-                filteredMessages := []MessageInfo{}
-                for _, msg := range messages {
-                    if msg.Timestamp.Before(beforeTime) {
-                        filteredMessages = append(filteredMessages, msg)
-                    }
-                }
-                messages = filteredMessages
-            }
-        }
-
-        // Apply limit
+        // Apply limit if specified
         if len(messages) > limit {
             messages = messages[:limit]
         }
 
-        // Get the ID of the oldest message for pagination
-        var oldestMessageId string
-        var oldestTimestamp *time.Time
-        if len(messages) > 0 {
-            oldestMessage := messages[len(messages)-1]
-            oldestMessageId = oldestMessage.ID
-            ts := oldestMessage.Timestamp
-            oldestTimestamp = &ts
+        // If we have a beforeId, request history sync
+        if beforeId != "" {
+            log.Printf("Requesting history sync for messages before %s", beforeId)
+            // Request history sync in background
+            go func() {
+                // Create message info for the last known message
+                lastKnownMsg := &watypes.MessageInfo{
+                    ID: watypes.MessageID(beforeId),
+                    MessageSource: watypes.MessageSource{
+                        Chat: chatJID,
+                        IsFromMe: false,
+                        IsGroup: chatJID.Server == "g.us",
+                    },
+                }
+
+                // Build and send history sync request
+                historyMsg := waClient.Client.BuildHistorySyncRequest(lastKnownMsg, limit)
+                _, err := waClient.Client.SendMessage(context.Background(), chatJID, historyMsg, whatsmeow.SendRequestExtra{
+                    Peer: true, // Important: This must be true for history sync requests
+                })
+                if err != nil {
+                    log.Printf("Error requesting history sync: %v", err)
+                } else {
+                    log.Printf("Successfully requested history sync")
+                }
+            }()
         }
 
-        c.JSON(http.StatusOK, gin.H{
-            "status":          "success",
-            "data":           messages,
-            "message":        fmt.Sprintf("Retrieved %d messages for chat %s", len(messages), chatId),
-            "oldestMessageId": oldestMessageId,
-            "oldestTimestamp": oldestTimestamp,
-            "hasMore":        len(messages) == limit,
-        })
+        response := gin.H{
+            "status": "success",
+            "data": gin.H{
+                "messages": messages,
+            },
+            "message": fmt.Sprintf("Retrieved %d messages", len(messages)),
+        }
+
+        log.Printf("Returning response with %d messages", len(messages))
+        c.JSON(http.StatusOK, response)
         return
     }
 
-    // Get all messages across all chats
-    allMessages := []MessageInfo{}
-    client.MessagesMux.RLock()
-    if client.Messages != nil {
-        for _, chatMessages := range client.Messages {
-            allMessages = append(allMessages, chatMessages...)
-        }
+    // If no chatId provided, return all messages across all chats
+    var allMessages []MessageInfo
+    waClient.MessagesMux.RLock()
+    for chatID, chatMessages := range waClient.Messages {
+        log.Printf("Found %d messages for chat %s", len(chatMessages), chatID)
+        allMessages = append(allMessages, chatMessages...)
     }
-    client.MessagesMux.RUnlock()
+    waClient.MessagesMux.RUnlock()
 
     // Sort all messages by timestamp in descending order
     sort.Slice(allMessages, func(i, j int) bool {
         return allMessages[i].Timestamp.After(allMessages[j].Timestamp)
     })
 
-    // Apply limit
+    // Apply limit if specified
     if len(allMessages) > limit {
         allMessages = allMessages[:limit]
     }
 
+    log.Printf("Returning %d total messages across all chats", len(allMessages))
     c.JSON(http.StatusOK, gin.H{
-        "status":  "success",
-        "data":    allMessages,
-        "message": fmt.Sprintf("Retrieved %d messages across all chats", len(allMessages)),
+        "status": "success",
+        "data": gin.H{
+            "messages": allMessages,
+        },
+        "message": fmt.Sprintf("Retrieved %d messages", len(allMessages)),
     })
 }
 
@@ -1569,415 +1689,44 @@ func main() {
 		})
 	}
 
-	// Message endpoints
+	// Message routes
 	messageGroup := r.Group("/messages")
 	{
-		// Get messages
-		messageGroup.GET("/list", handleGetMessages)
+		// Get all messages
+		messageGroup.GET("", handleGetMessages)
 
 		// Get messages by chat
-		messageGroup.GET("/list/:chatId", func(c *gin.Context) {
+		messageGroup.GET("/:chatId", func(c *gin.Context) {
 			deviceID := c.Query("deviceId")
-			chatJID := c.Param("chatId")
-
-			if deviceID == "" {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId is required"})
-				return
-			}
-
+			chatID := c.Param("chatId")
+			
 			waClientsMux.RLock()
-			client := waClients[deviceID]
+			waClient := waClients[deviceID]
 			waClientsMux.RUnlock()
 
-			if client == nil {
+			if waClient == nil {
 				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
 				return
 			}
 
-			chat, err := watypes.ParseJID(chatJID)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chat JID"})
-				return
-			}
+			waClient.MessagesMux.RLock()
+			messages := waClient.Messages[chatID]
+			waClient.MessagesMux.RUnlock()
 
-			// For now return empty list as message history requires additional setup
-			c.JSON(http.StatusOK, gin.H{
-				"chatId": chat.String(),
-				"messages": []interface{}{},
-			})
+			c.JSON(http.StatusOK, messages)
 		})
 
 		// Send text message
 		messageGroup.POST("/text", handleSendMessage)
 
-		// Send image message
-		messageGroup.POST("/image", handleSendMediaMessage)
-
-		// Send video message
-		messageGroup.POST("/video", func(c *gin.Context) {
-			var req SendMediaMessageRequest
-			if err := c.BindJSON(&req); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
-
-			waClientsMux.RLock()
-			client := waClients[req.DeviceID]
-			waClientsMux.RUnlock()
-
-			if client == nil {
-				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
-				return
-			}
-
-			recipient, err := watypes.ParseJID(req.To)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid recipient JID"})
-				return
-			}
-
-			uploaded, err := client.Client.Upload(context.Background(), req.File, whatsmeow.MediaVideo)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-
-			msg := &waProto.Message{
-				VideoMessage: &waProto.VideoMessage{
-					Caption:       proto.String(req.Caption),
-					URL:          proto.String(uploaded.URL),
-					DirectPath:   proto.String(uploaded.DirectPath),
-					MediaKey:     uploaded.MediaKey,
-					FileEncSHA256: uploaded.FileEncSHA256,
-					FileSHA256:    uploaded.FileSHA256,
-					FileLength:    proto.Uint64(uploaded.FileLength),
-					Mimetype:     proto.String(http.DetectContentType(req.File)),
-				},
-			}
-
-			resp, err := client.Client.SendMessage(context.Background(), recipient, msg)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-
-			c.JSON(http.StatusOK, gin.H{
-				"status": "video sent",
-				"id": resp.ID,
-				"timestamp": resp.Timestamp,
-			})
-		})
-
-		// Send audio message
-		messageGroup.POST("/audio", func(c *gin.Context) {
-			var req SendMediaMessageRequest
-			if err := c.BindJSON(&req); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
-
-			waClientsMux.RLock()
-			client := waClients[req.DeviceID]
-			waClientsMux.RUnlock()
-
-			if client == nil {
-				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
-				return
-			}
-
-			recipient, err := watypes.ParseJID(req.To)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid recipient JID"})
-				return
-			}
-
-			uploaded, err := client.Client.Upload(context.Background(), req.File, whatsmeow.MediaAudio)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-
-			msg := &waProto.Message{
-				AudioMessage: &waProto.AudioMessage{
-					URL:          proto.String(uploaded.URL),
-					DirectPath:   proto.String(uploaded.DirectPath),
-					MediaKey:     uploaded.MediaKey,
-					FileEncSHA256: uploaded.FileEncSHA256,
-					FileSHA256:    uploaded.FileSHA256,
-					FileLength:    proto.Uint64(uploaded.FileLength),
-					Mimetype:     proto.String(http.DetectContentType(req.File)),
-				},
-			}
-
-			resp, err := client.Client.SendMessage(context.Background(), recipient, msg)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-
-			c.JSON(http.StatusOK, gin.H{
-				"status": "audio sent",
-				"id": resp.ID,
-				"timestamp": resp.Timestamp,
-			})
-		})
-
-		// Send document message
-		messageGroup.POST("/document", func(c *gin.Context) {
-			var req SendMediaMessageRequest
-			if err := c.BindJSON(&req); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
-
-			waClientsMux.RLock()
-			client := waClients[req.DeviceID]
-			waClientsMux.RUnlock()
-
-			if client == nil {
-				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
-				return
-			}
-
-			recipient, err := watypes.ParseJID(req.To)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid recipient JID"})
-				return
-			}
-
-			uploaded, err := client.Client.Upload(context.Background(), req.File, whatsmeow.MediaDocument)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-
-			msg := &waProto.Message{
-				DocumentMessage: &waProto.DocumentMessage{
-					Title:        proto.String(req.Caption),
-					URL:          proto.String(uploaded.URL),
-					DirectPath:   proto.String(uploaded.DirectPath),
-					MediaKey:     uploaded.MediaKey,
-					FileEncSHA256: uploaded.FileEncSHA256,
-					FileSHA256:    uploaded.FileSHA256,
-					FileLength:    proto.Uint64(uploaded.FileLength),
-					Mimetype:     proto.String(http.DetectContentType(req.File)),
-				},
-			}
-
-			resp, err := client.Client.SendMessage(context.Background(), recipient, msg)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-
-			c.JSON(http.StatusOK, gin.H{
-				"status": "document sent",
-				"id": resp.ID,
-				"timestamp": resp.Timestamp,
-			})
-		})
+		// Send media message
+		messageGroup.POST("/media", handleSendMediaMessage)
 
 		// Send location message
 		messageGroup.POST("/location", handleSendLocationMessage)
 
-		// Send link preview message
-		messageGroup.POST("/link_preview", func(c *gin.Context) {
-			var req SendLinkPreviewRequest
-			if err := c.BindJSON(&req); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
-
-			waClientsMux.RLock()
-			client := waClients[req.DeviceID]
-			waClientsMux.RUnlock()
-
-			if client == nil {
-				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
-				return
-			}
-
-			recipient, err := watypes.ParseJID(req.To)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid recipient JID"})
-				return
-			}
-
-			msg := &waProto.Message{
-				ExtendedTextMessage: &waProto.ExtendedTextMessage{
-					Text:        proto.String(req.URL),
-					MatchedText: proto.String(req.URL),
-					Title:      proto.String(req.Title),
-					Description: proto.String(req.Description),
-				},
-			}
-
-			resp, err := client.Client.SendMessage(context.Background(), recipient, msg)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-
-			c.JSON(http.StatusOK, gin.H{
-				"status": "link preview sent",
-				"id": resp.ID,
-				"timestamp": resp.Timestamp,
-			})
-		})
-
-		// Send sticker message
-		messageGroup.POST("/sticker", func(c *gin.Context) {
-			var req SendStickerRequest
-			if err := c.BindJSON(&req); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
-
-			waClientsMux.RLock()
-			client := waClients[req.DeviceID]
-			waClientsMux.RUnlock()
-
-			if client == nil {
-				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
-				return
-			}
-
-			recipient, err := watypes.ParseJID(req.To)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid recipient JID"})
-				return
-			}
-
-			uploaded, err := client.Client.Upload(context.Background(), req.File, whatsmeow.MediaImage)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-
-			msg := &waProto.Message{
-				StickerMessage: &waProto.StickerMessage{
-					URL:           proto.String(uploaded.URL),
-					DirectPath:    proto.String(uploaded.DirectPath),
-					MediaKey:      uploaded.MediaKey,
-					FileEncSHA256: uploaded.FileEncSHA256,
-					FileSHA256:    uploaded.FileSHA256,
-					FileLength:    proto.Uint64(uploaded.FileLength),
-					Mimetype:      proto.String("image/webp"),
-				},
-			}
-
-			resp, err := client.Client.SendMessage(context.Background(), recipient, msg)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-
-			c.JSON(http.StatusOK, gin.H{
-				"status": "sticker sent",
-				"id":     resp.ID,
-				"timestamp": resp.Timestamp,
-			})
-		})
-
-		// Send story
-		messageGroup.POST("/story", func(c *gin.Context) {
-			var req SendStoryRequest
-			if err := c.BindJSON(&req); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
-
-			waClientsMux.RLock()
-			client := waClients[req.DeviceID]
-			waClientsMux.RUnlock()
-
-			if client == nil {
-				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
-				return
-			}
-
-			var msg *waProto.Message
-			if len(req.File) > 0 {
-				uploaded, err := client.Client.Upload(context.Background(), req.File, whatsmeow.MediaImage)
-				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-					return
-				}
-
-				msg = &waProto.Message{
-					ImageMessage: &waProto.ImageMessage{
-						Caption:       proto.String(req.Caption),
-						URL:          proto.String(uploaded.URL),
-						DirectPath:   proto.String(uploaded.DirectPath),
-						MediaKey:     uploaded.MediaKey,
-						FileEncSHA256: uploaded.FileEncSHA256,
-						FileSHA256:    uploaded.FileSHA256,
-						FileLength:    proto.Uint64(uploaded.FileLength),
-						Mimetype:     proto.String(http.DetectContentType(req.File)),
-						ViewOnce:     proto.Bool(true),
-					},
-				}
-			} else {
-				msg = &waProto.Message{
-					Conversation: proto.String(req.Text),
-				}
-			}
-
-			// Send to "status@broadcast"
-			recipient := watypes.JID{
-				User:   "status",
-				Server: "broadcast",
-			}
-
-			resp, err := client.Client.SendMessage(context.Background(), recipient, msg)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-
-			c.JSON(http.StatusOK, gin.H{
-				"status": "story sent",
-				"id":     resp.ID,
-				"timestamp": resp.Timestamp,
-			})
-		})
-
-		// Get message by ID
-		messageGroup.GET("/:messageId", func(c *gin.Context) {
-			deviceID := c.Query("deviceId")
-			messageID := c.Param("messageId")
-			chatJID := c.Query("chatId")
-
-			if deviceID == "" || chatJID == "" {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId and chatId are required"})
-				return
-			}
-
-			waClientsMux.RLock()
-			client := waClients[deviceID]
-			waClientsMux.RUnlock()
-
-			if client == nil {
-				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
-				return
-			}
-
-			chat, err := watypes.ParseJID(chatJID)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chat JID"})
-				return
-			}
-
-			// For now return a placeholder as message retrieval requires additional setup
-			c.JSON(http.StatusOK, gin.H{
-				"messageId": messageID,
-				"chatId": chat.String(),
-				"status": "message details would be returned here",
-			})
-		})
-
-		// Forward message
-		messageGroup.POST("/:messageId", func(c *gin.Context) {
+		// Send reaction
+		messageGroup.POST("/reaction", func(c *gin.Context) {
 			var req MessageActionRequest
 			if err := c.BindJSON(&req); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -1985,462 +1734,119 @@ func main() {
 			}
 
 			waClientsMux.RLock()
-			client := waClients[req.DeviceID]
+			waClient := waClients[req.DeviceID]
 			waClientsMux.RUnlock()
 
-			if client == nil {
+			if waClient == nil || waClient.Client == nil {
 				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
 				return
 			}
 
-			chat, err := watypes.ParseJID(req.ChatID)
+			chatJID, err := parseJID(req.ChatID)
 			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chat JID"})
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chat ID"})
 				return
 			}
 
-			// Forward message implementation would go here
-			// For now, just return success
-			c.JSON(http.StatusOK, gin.H{
-				"status": "message forwarded",
-				"messageId": req.MessageID,
-				"chatId": chat.String(),
-			})
-		})
-
-		// React to message
-		messageGroup.PUT("/:messageId/reaction", func(c *gin.Context) {
-			var req MessageActionRequest
-			if err := c.BindJSON(&req); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
-
-			waClientsMux.RLock()
-			client := waClients[req.DeviceID]
-			waClientsMux.RUnlock()
-
-			if client == nil {
-				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
-				return
-			}
-
-			chat, err := watypes.ParseJID(req.ChatID)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chat JID"})
-				return
-			}
-
-			msg := client.Client.BuildReaction(chat, chat, req.MessageID, req.Reaction)
-			resp, err := client.Client.SendMessage(context.Background(), chat, msg)
+			msgID := watypes.MessageID(req.MessageID)
+			reaction := waClient.Client.BuildReaction(chatJID, chatJID, msgID, req.Reaction)
+			_, err = waClient.Client.SendMessage(context.Background(), chatJID, reaction)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
 
-			c.JSON(http.StatusOK, gin.H{
-				"status": "reaction sent",
-				"id": resp.ID,
-				"timestamp": resp.Timestamp,
-			})
-		})
-
-		// Star message
-		messageGroup.PUT("/:messageId/star", func(c *gin.Context) {
-			var req MessageActionRequest
-			if err := c.BindJSON(&req); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
-
-			// Star message implementation would go here
-			c.JSON(http.StatusOK, gin.H{
-				"status": "message starred",
-				"messageId": req.MessageID,
-			})
+			c.JSON(http.StatusOK, gin.H{"status": "reaction sent"})
 		})
 
 		// Delete message
 		messageGroup.DELETE("/:messageId", func(c *gin.Context) {
-			var req MessageActionRequest
-			if err := c.BindJSON(&req); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
+			deviceID := c.Query("deviceId")
+			messageID := c.Param("messageId")
+			chatID := c.Query("chatId")
 
 			waClientsMux.RLock()
-			client := waClients[req.DeviceID]
+			waClient := waClients[deviceID]
 			waClientsMux.RUnlock()
 
-			if client == nil {
+			if waClient == nil || waClient.Client == nil {
 				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
 				return
 			}
 
-			chat, err := watypes.ParseJID(req.ChatID)
+			chatJID, err := parseJID(chatID)
 			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chat JID"})
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chat ID"})
 				return
 			}
 
-			msg := client.Client.BuildRevoke(chat, chat, req.MessageID)
-			resp, err := client.Client.SendMessage(context.Background(), chat, msg)
+			msgID := watypes.MessageID(messageID)
+			revoke := waClient.Client.BuildRevoke(chatJID, chatJID, msgID)
+			_, err = waClient.Client.SendMessage(context.Background(), chatJID, revoke)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
 
-			c.JSON(http.StatusOK, gin.H{
-				"status": "message deleted",
-				"id": resp.ID,
-				"timestamp": resp.Timestamp,
-			})
+			c.JSON(http.StatusOK, gin.H{"status": "message deleted"})
 		})
 	}
 
-	// Chat management endpoints
+	// Chat routes
 	chatGroup := r.Group("/chats")
 	{
 		// Get all chats
 		chatGroup.GET("", handleGetChats)
 
-		// Get chat by ID
+		// Get specific chat
 		chatGroup.GET("/:chatId", handleGetChat)
 
 		// Delete chat
 		chatGroup.DELETE("/:chatId", handleDeleteChat)
 
-		// Archive/Unarchive chat
-		chatGroup.POST("/:chatId/archive", handleArchiveChat)
+		// Archive/unarchive chat
+		chatGroup.PUT("/:chatId/archive", handleArchiveChat)
 
-		// Update chat settings (pin/mute/mark as read)
-		chatGroup.POST("/:chatId/settings", handleUpdateChatSettings)
+		// Update chat settings
+		chatGroup.PUT("/:chatId/settings", handleUpdateChatSettings)
 	}
-
-	// Add get-groups endpoint
-	r.GET("/get-groups/:deviceId", handleGetGroups)
 
 	// Group management endpoints
 	groupGroup := r.Group("/groups")
 	{
-		// Get all groups
-		groupGroup.GET("", func(c *gin.Context) {
-			deviceID := c.Query("deviceId")
-			if deviceID == "" {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId is required"})
-				return
-			}
-
-			waClientsMux.RLock()
-			client := waClients[deviceID]
-			waClientsMux.RUnlock()
-
-			if client == nil {
-				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
-				return
-			}
-
-			groups, err := client.Client.GetJoinedGroups()
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-
-			var groupList []map[string]interface{}
-			for _, group := range groups {
-				groupList = append(groupList, map[string]interface{}{
-					"id": group.JID.String(),
-					"name": group.Name,
-					"participants": len(group.Participants),
-					"owner": group.OwnerJID.String(),
-					"creation": group.GroupCreated.Unix(),
-				})
-			}
-
-			c.JSON(http.StatusOK, groupList)
-		})
-
-		// Create group
-		groupGroup.POST("", handleCreateGroup)
-
-		// Accept group invite
-		groupGroup.PUT("", func(c *gin.Context) {
-			deviceID := c.Query("deviceId")
-			inviteCode := c.Query("code")
-
-			if deviceID == "" || inviteCode == "" {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId and invite code are required"})
-				return
-			}
-
-			waClientsMux.RLock()
-			client := waClients[deviceID]
-			waClientsMux.RUnlock()
-
-			if client == nil {
-				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
-				return
-			}
-
-			_, err := client.Client.JoinGroupWithLink(inviteCode)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-
-			c.JSON(http.StatusOK, gin.H{"status": "joined group successfully"})
-		})
-
-		// Group-specific endpoints
-		groupGroup.GET("/:groupId", func(c *gin.Context) {
+		// Group participants
+		groupGroup.GET("/:groupId/participants", func(c *gin.Context) {
 			deviceID := c.Query("deviceId")
 			groupID := c.Param("groupId")
 
-			if deviceID == "" {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId is required"})
-				return
-			}
-
 			waClientsMux.RLock()
-			client := waClients[deviceID]
+			waClient := waClients[deviceID]
 			waClientsMux.RUnlock()
 
-			if client == nil {
+			if waClient == nil || waClient.Client == nil {
 				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
 				return
 			}
 
-			groupJID, err := watypes.ParseJID(groupID)
+			groupJID, err := parseJID(groupID)
 			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group JID"})
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group ID"})
 				return
 			}
 
-			info, err := client.Client.GetGroupInfo(groupJID)
+			// Get group info first to get participants
+			info, err := waClient.Client.GetGroupInfo(groupJID)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
 
-			c.JSON(http.StatusOK, map[string]interface{}{
-				"id": info.JID.String(),
-				"name": info.Name,
-				"topic": info.Topic,
-				"creation": info.GroupCreated.Unix(),
-				"owner": info.OwnerJID.String(),
-				"participants": len(info.Participants),
-				"ephemeralTimer": info.GroupEphemeral,
-				"isAnnounce": info.IsAnnounce,
-				"isLocked": info.IsLocked,
-			})
+			// Return the participants from group info
+			c.JSON(http.StatusOK, info.Participants)
 		})
 
-		// Update group info
-		groupGroup.PUT("/:groupId", func(c *gin.Context) {
-			deviceID := c.Query("deviceId")
-			groupID := c.Param("groupId")
-			var updateData struct {
-				Name          string `json:"name,omitempty"`
-				Topic         string `json:"topic,omitempty"`
-				Announce      *bool  `json:"announce,omitempty"`
-				Locked       *bool  `json:"locked,omitempty"`
-				EphemeralTimer *uint32 `json:"ephemeralTimer,omitempty"`
-			}
-
-			if err := c.BindJSON(&updateData); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
-
-			if deviceID == "" {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId is required"})
-				return
-			}
-
-			waClientsMux.RLock()
-			client := waClients[deviceID]
-			waClientsMux.RUnlock()
-
-			if client == nil || client.Client == nil {
-				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
-				return
-			}
-
-			groupJID, err := watypes.ParseJID(groupID)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group JID"})
-				return
-			}
-
-			if updateData.Name != "" {
-				err = client.Client.SetGroupName(groupJID, updateData.Name)
-				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update name: %v", err)})
-					return
-				}
-			}
-
-			if updateData.Topic != "" {
-				err = client.Client.SetGroupTopic(groupJID, updateData.Topic, "", "")
-				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update topic: %v", err)})
-					return
-				}
-			}
-
-			if updateData.Announce != nil {
-				err = client.Client.SetGroupAnnounce(groupJID, *updateData.Announce)
-				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update announce setting: %v", err)})
-					return
-				}
-			}
-
-			if updateData.Locked != nil {
-				err = client.Client.SetGroupLocked(groupJID, *updateData.Locked)
-				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update locked setting: %v", err)})
-					return
-				}
-			}
-
-			c.JSON(http.StatusOK, gin.H{"status": "group updated successfully"})
-		})
-
-		// Leave group
-		groupGroup.DELETE("/:groupId", func(c *gin.Context) {
-			deviceID := c.Query("deviceId")
-			groupID := c.Param("groupId")
-
-			if deviceID == "" {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId is required"})
-				return
-			}
-
-			waClientsMux.RLock()
-			client := waClients[deviceID]
-			waClientsMux.RUnlock()
-
-			if client == nil {
-				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
-				return
-			}
-
-			groupJID, err := watypes.ParseJID(groupID)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group JID"})
-				return
-			}
-
-			err = client.Client.LeaveGroup(groupJID)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-
-			c.JSON(http.StatusOK, gin.H{"status": "left group successfully"})
-		})
-
-		// Get group invite
-		groupGroup.GET("/:groupId/invite", func(c *gin.Context) {
-			deviceID := c.Query("deviceId")
-			groupID := c.Param("groupId")
-
-			if deviceID == "" {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId is required"})
-				return
-			}
-
-			waClientsMux.RLock()
-			client := waClients[deviceID]
-			waClientsMux.RUnlock()
-
-			if client == nil {
-				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
-				return
-			}
-
-			groupJID, err := watypes.ParseJID(groupID)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group JID"})
-				return
-			}
-
-			link, err := client.Client.GetGroupInviteLink(groupJID, false)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-
-			c.JSON(http.StatusOK, gin.H{"invite_link": link})
-		})
-
-		// Add participants
+		// Add/remove participants
 		groupGroup.POST("/:groupId/participants", func(c *gin.Context) {
-			deviceID := c.Query("deviceId")
-			groupID := c.Param("groupId")
-			var req struct {
-				Participants []string `json:"participants"`
-			}
-			if err := c.BindJSON(&req); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
-
-			waClientsMux.RLock()
-			client := waClients[deviceID]
-			waClientsMux.RUnlock()
-
-			if client == nil || client.Client == nil {
-				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
-				return
-			}
-
-			groupJID, err := watypes.ParseJID(groupID)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group JID"})
-				return
-			}
-
-			participants := make([]watypes.JID, len(req.Participants))
-			for i, p := range req.Participants {
-				// Clean the phone number
-				p = strings.TrimSpace(p)
-				p = strings.ReplaceAll(p, " ", "")
-				p = strings.ReplaceAll(p, "-", "")
-				p = strings.ReplaceAll(p, "+", "")
-				
-				// Remove any existing suffix
-				p = strings.TrimSuffix(p, "@s.whatsapp.net")
-				p = strings.TrimSuffix(p, "@g.us")
-				
-				// Add @s.whatsapp.net
-				p = p + "@s.whatsapp.net"
-				
-				jid, err := watypes.ParseJID(p)
-				if err != nil {
-					c.JSON(http.StatusBadRequest, gin.H{
-						"error": fmt.Sprintf("invalid participant number %s: %v", p, err),
-					})
-					return
-				}
-				participants[i] = jid
-			}
-
-			result, err := client.Client.UpdateGroupParticipants(groupJID, participants, whatsmeow.ParticipantChangeAdd)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-
-			c.JSON(http.StatusOK, gin.H{
-				"status": "participants added",
-				"result": result,
-			})
-		})
-
-		// Remove participants
-		groupGroup.DELETE("/:groupId/participants", func(c *gin.Context) {
 			var req GroupParticipantRequest
 			if err := c.BindJSON(&req); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -2448,89 +1854,171 @@ func main() {
 			}
 
 			waClientsMux.RLock()
-			client := waClients[req.DeviceID]
+			waClient := waClients[req.DeviceID]
 			waClientsMux.RUnlock()
 
-			if client == nil {
+			if waClient == nil || waClient.Client == nil {
 				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
 				return
 			}
 
-			groupJID, err := watypes.ParseJID(req.GroupID)
+			groupJID, err := parseJID(req.GroupID)
 			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group JID"})
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group ID"})
 				return
 			}
 
-			participants := make([]watypes.JID, len(req.Participants))
-			for i, p := range req.Participants {
-				jid, err := watypes.ParseJID(p)
+			var participants []watypes.JID
+			for _, p := range req.Participants {
+				jid, err := parseJID(p)
 				if err != nil {
-					c.JSON(http.StatusBadRequest, gin.H{"error": "invalid participant JID"})
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid participant JID: %s", p)})
 					return
 				}
-				participants[i] = jid
+				participants = append(participants, jid)
 			}
 
-			result, err := client.Client.UpdateGroupParticipants(groupJID, participants, whatsmeow.ParticipantChangeRemove)
+			action := c.Query("action")
+			var participantAction whatsmeow.ParticipantChange
+			switch action {
+			case "add":
+				participantAction = whatsmeow.ParticipantChangeAdd
+			case "remove":
+				participantAction = whatsmeow.ParticipantChangeRemove
+			case "promote":
+				participantAction = whatsmeow.ParticipantChangePromote
+			case "demote":
+				participantAction = whatsmeow.ParticipantChangeDemote
+			default:
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid action"})
+				return
+			}
+
+			result, err := waClient.Client.UpdateGroupParticipants(groupJID, participants, participantAction)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
 
-			c.JSON(http.StatusOK, gin.H{
-				"status": "participants removed",
-				"result": result,
-			})
+			c.JSON(http.StatusOK, result)
 		})
 
-		// Get group icon
-		groupGroup.GET("/:groupId/icon", func(c *gin.Context) {
+		// Get group invite link
+		groupGroup.GET("/:groupId/invite", func(c *gin.Context) {
+			deviceID := c.Query("deviceId")
+			groupID := c.Param("groupId")
+			reset := c.Query("reset") == "true"
+
+			waClientsMux.RLock()
+			waClient := waClients[deviceID]
+			waClientsMux.RUnlock()
+
+			if waClient == nil || waClient.Client == nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
+				return
+			}
+
+			groupJID, err := parseJID(groupID)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group ID"})
+				return
+			}
+
+			link, err := waClient.Client.GetGroupInviteLink(groupJID, reset)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+
+			c.JSON(http.StatusOK, gin.H{"link": link})
+		})
+
+		// Join group with invite link
+		groupGroup.POST("/:groupId/join", func(c *gin.Context) {
+			deviceID := c.Query("deviceId")
+			code := c.Query("code")
+
+			waClientsMux.RLock()
+			waClient := waClients[deviceID]
+			waClientsMux.RUnlock()
+
+			if waClient == nil || waClient.Client == nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
+				return
+			}
+
+			groupID, err := waClient.Client.JoinGroupWithLink(code)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+
+			c.JSON(http.StatusOK, gin.H{"groupId": groupID.String()})
+		})
+
+		// Get group info
+		groupGroup.GET("/:groupId", func(c *gin.Context) {
 			deviceID := c.Query("deviceId")
 			groupID := c.Param("groupId")
 
-			if deviceID == "" {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId is required"})
-				return
-			}
-
 			waClientsMux.RLock()
-			client := waClients[deviceID]
+			waClient := waClients[deviceID]
 			waClientsMux.RUnlock()
 
-			if client == nil {
+			if waClient == nil || waClient.Client == nil {
 				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
 				return
 			}
 
-			groupJID, err := watypes.ParseJID(groupID)
+			groupJID, err := parseJID(groupID)
 			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group JID"})
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group ID"})
 				return
 			}
 
-			
-			pic, err := client.Client.GetProfilePictureInfo(groupJID, &whatsmeow.GetProfilePictureParams{
-				Preview: false,
-				IsCommunity: false,
-			})
+			info, err := waClient.Client.GetGroupInfo(groupJID)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
 
-			if pic == nil {
-				c.JSON(http.StatusNotFound, gin.H{"error": "no group icon found"})
+			c.JSON(http.StatusOK, info)
+		})
+
+		// Leave group
+		groupGroup.DELETE("/:groupId", func(c *gin.Context) {
+			deviceID := c.Query("deviceId")
+			groupID := c.Param("groupId")
+
+			waClientsMux.RLock()
+			waClient := waClients[deviceID]
+			waClientsMux.RUnlock()
+
+			if waClient == nil || waClient.Client == nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
 				return
 			}
 
-			c.JSON(http.StatusOK, gin.H{
-				"url": pic.URL,
-				"id": pic.ID,
-				"type": pic.Type,
-				"directPath": pic.DirectPath,
-			})
+			groupJID, err := parseJID(groupID)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group ID"})
+				return
+			}
+
+			err = waClient.Client.LeaveGroup(groupJID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+
+			c.JSON(http.StatusOK, gin.H{"status": "left group"})
 		})
+
+		// Get all groups
+		groupGroup.GET("", handleGetGroups)
+
+		// Create group
+		groupGroup.POST("/create", handleCreateGroup)
 	}
 
 	// Add QR code endpoint
@@ -2599,5 +2087,8 @@ func main() {
 		}
 	})
 
-	log.Fatal(srv.ListenAndServe())
+	// Start the server
+	if err := srv.ListenAndServe(); err != nil {
+		log.Fatal(err)
+	}
 }

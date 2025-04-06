@@ -331,10 +331,53 @@ func GetGroups(deviceID string) ([]Group, error) {
     return groups, err
 }
 
+// GetMessages retrieves messages from DynamoDB for a given device ID and optionally a chat ID
+func GetMessages(deviceID string, chatID string, limit int) ([]Message, error) {
+    var input *dynamodb.QueryInput
+
+    if chatID != "" {
+        // Query for specific chat
+        input = &dynamodb.QueryInput{
+            TableName: aws.String(MessagesTable),
+            KeyConditionExpression: aws.String("device_id = :device_id AND chat_id = :chat_id"),
+            ExpressionAttributeValues: map[string]types.AttributeValue{
+                ":device_id": &types.AttributeValueMemberS{Value: deviceID},
+                ":chat_id":   &types.AttributeValueMemberS{Value: chatID},
+            },
+            ScanIndexForward: aws.Bool(false), // Sort in descending order (newest first)
+            Limit:           aws.Int32(int32(limit)),
+        }
+    } else {
+        // Query for all chats of the device using the timestamp index
+        input = &dynamodb.QueryInput{
+            TableName: aws.String(MessagesTable),
+            IndexName: aws.String("timestamp-index"),
+            KeyConditionExpression: aws.String("device_id = :device_id"),
+            ExpressionAttributeValues: map[string]types.AttributeValue{
+                ":device_id": &types.AttributeValueMemberS{Value: deviceID},
+            },
+            ScanIndexForward: aws.Bool(false), // Sort in descending order (newest first)
+            Limit:           aws.Int32(int32(limit)),
+        }
+    }
+
+    result, err := config.DynamoDBClient.Query(context.TODO(), input)
+    if err != nil {
+        return nil, fmt.Errorf("failed to query messages: %v", err)
+    }
+
+    var messages []Message
+    err = attributevalue.UnmarshalListOfMaps(result.Items, &messages)
+    if err != nil {
+        return nil, fmt.Errorf("failed to unmarshal messages: %v", err)
+    }
+
+    return messages, nil
+}
+
 func CreateTables() error {
     // Create Messages table
-    var err error
-    _, err = config.DynamoDBClient.CreateTable(context.Background(), &dynamodb.CreateTableInput{
+    _, err := config.DynamoDBClient.CreateTable(context.Background(), &dynamodb.CreateTableInput{
         TableName: aws.String(MessagesTable),
         AttributeDefinitions: []types.AttributeDefinition{
             {
@@ -376,16 +419,9 @@ func CreateTables() error {
                 Projection: &types.Projection{
                     ProjectionType: types.ProjectionTypeAll,
                 },
-                ProvisionedThroughput: &types.ProvisionedThroughput{
-                    ReadCapacityUnits:  aws.Int64(5),
-                    WriteCapacityUnits: aws.Int64(5),
-                },
             },
         },
-        ProvisionedThroughput: &types.ProvisionedThroughput{
-            ReadCapacityUnits:  aws.Int64(5),
-            WriteCapacityUnits: aws.Int64(5),
-        },
+        BillingMode: types.BillingModePayPerRequest,
     })
     if err != nil {
         var resourceInUseErr *types.ResourceInUseException
@@ -407,10 +443,6 @@ func CreateTables() error {
                 AttributeName: aws.String("id"),
                 AttributeType: types.ScalarAttributeTypeS,
             },
-            {
-                AttributeName: aws.String("updated_at"),
-                AttributeType: types.ScalarAttributeTypeS,
-            },
         },
         KeySchema: []types.KeySchemaElement{
             {
@@ -422,32 +454,7 @@ func CreateTables() error {
                 KeyType:      types.KeyTypeRange,
             },
         },
-        GlobalSecondaryIndexes: []types.GlobalSecondaryIndex{
-            {
-                IndexName: aws.String("updated-at-index"),
-                KeySchema: []types.KeySchemaElement{
-                    {
-                        AttributeName: aws.String("device_id"),
-                        KeyType:      types.KeyTypeHash,
-                    },
-                    {
-                        AttributeName: aws.String("updated_at"),
-                        KeyType:      types.KeyTypeRange,
-                    },
-                },
-                Projection: &types.Projection{
-                    ProjectionType: types.ProjectionTypeAll,
-                },
-                ProvisionedThroughput: &types.ProvisionedThroughput{
-                    ReadCapacityUnits:  aws.Int64(5),
-                    WriteCapacityUnits: aws.Int64(5),
-                },
-            },
-        },
-        ProvisionedThroughput: &types.ProvisionedThroughput{
-            ReadCapacityUnits:  aws.Int64(5),
-            WriteCapacityUnits: aws.Int64(5),
-        },
+        BillingMode: types.BillingModePayPerRequest,
     })
     if err != nil {
         var resourceInUseErr *types.ResourceInUseException
