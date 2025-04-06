@@ -226,6 +226,11 @@ func GetDevices(jid string) ([]Device, error) {
     return devices, err
 }
 
+// GetAllDevices retrieves all devices from DynamoDB
+func GetAllDevices() ([]Device, error) {
+    return GetDevices("")  // Empty JID means get all devices
+}
+
 // SaveDevice saves or updates a device in DynamoDB
 func SaveDevice(device Device) error {
     // Add timestamp if not set

@@ -1,0 +1,81 @@
+{
+    "total_tests": 9,
+    "passed_tests": 9,
+    "failed_tests": 0,
+    "test_results": [
+        {
+            "endpoint": "/devices",
+            "method": "GET",
+            "status_code": 200,
+            "success": true,
+            "timestamp": "2025-04-06T19:10:25.07198+05:30",
+            "response_time_ms": 4
+        },
+        {
+            "endpoint": "/contacts?deviceId=918002499033:78@s.whatsapp.net",
+            "method": "GET",
+            "status_code": 200,
+            "success": true,
+            "timestamp": "2025-04-06T19:10:25.076133+05:30",
+            "response_time_ms": 6
+        },
+        {
+            "endpoint": "/contacts",
+            "method": "POST",
+            "status_code": 200,
+            "success": true,
+            "timestamp": "2025-04-06T19:10:25.083734+05:30",
+            "response_time_ms": 0
+        },
+        {
+            "endpoint": "/messages?deviceId=918002499033:78@s.whatsapp.net",
+            "method": "GET",
+            "status_code": 200,
+            "success": true,
+            "timestamp": "2025-04-06T19:10:25.084548+05:30",
+            "response_time_ms": 0
+        },
+        {
+            "endpoint": "/messages?deviceId=918002499033:78@s.whatsapp.net\u0026chatId=917275860207@s.whatsapp.net",
+            "method": "GET",
+            "status_code": 200,
+            "success": true,
+            "timestamp": "2025-04-06T19:10:25.085526+05:30",
+            "response_time_ms": 0
+        },
+        {
+            "endpoint": "/messages/text",
+            "method": "POST",
+            "status_code": 200,
+            "success": true,
+            "timestamp": "2025-04-06T19:10:25.086301+05:30",
+            "response_time_ms": 853
+        },
+        {
+            "endpoint": "/chats?deviceId=918002499033:78@s.whatsapp.net",
+            "method": "GET",
+            "status_code": 200,
+            "success": true,
+            "timestamp": "2025-04-06T19:10:25.93973+05:30",
+            "response_time_ms": 7
+        },
+        {
+            "endpoint": "/chats/917275860207?deviceId=918002499033:78@s.whatsapp.net",
+            "method": "GET",
+            "status_code": 200,
+            "success": true,
+            "timestamp": "2025-04-06T19:10:25.949364+05:30",
+            "response_time_ms": 2
+        },
+        {
+            "endpoint": "/groups?deviceId=918002499033:78@s.whatsapp.net",
+            "method": "GET",
+            "status_code": 200,
+            "success": true,
+            "timestamp": "2025-04-06T19:10:25.951993+05:30",
+            "response_time_ms": 2814
+        }
+    ],
+    "total_execution_time_ms": 3694,
+    "timestamp": "2025-04-06T19:10:25.071956+05:30"
+}

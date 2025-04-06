@@ -524,34 +524,34 @@ func updateDeviceInfo(deviceID string, connected bool, deviceInfo map[string]int
 }
 
 func getAllDevices() []DeviceInfo {
-	collection := mongoClient.Database("whatsapp").Collection("devices")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
 	var devices []DeviceInfo
-	cursor, err := collection.Find(ctx, bson.M{})
+
+	// Get devices from DynamoDB
+	dbDevices, err := db.GetAllDevices()
 	if err != nil {
-		log.Printf("Error fetching devices: %v", err)
+		log.Printf("Error fetching devices from DynamoDB: %v", err)
 		return devices
 	}
-	defer cursor.Close(ctx)
 
-	err = cursor.All(ctx, &devices)
-	if err != nil {
-		log.Printf("Error decoding devices: %v", err)
+	// Convert db.Device to DeviceInfo
+	for _, d := range dbDevices {
+		devices = append(devices, DeviceInfo{
+			JID:       d.JID,
+			Connected: d.Connected,
+			LastSeen:  parseTime(d.LastSeen),
+			PushName:  d.PushName,
+			Platform:  d.Platform,
+		})
 	}
+
 	return devices
 }
 
 func cleanupDeviceData(jid string) {
-	// Remove from MongoDB
-	collection := mongoClient.Database("whatsapp").Collection("devices")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := collection.DeleteOne(ctx, bson.M{"jid": jid})
+	// Remove from DynamoDB
+	err := db.DeleteDevice(jid)
 	if err != nil {
-		log.Printf("Error deleting device info from MongoDB: %v", err)
+		log.Printf("Error deleting device from DynamoDB: %v", err)
 	}
 
 	// Remove from waClients map
