@@ -14,7 +14,6 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/joho/godotenv v1.5.1
 	go.mau.fi/whatsmeow v0.0.0-20250402091807-b0caa1b76088
-	go.mongodb.org/mongo-driver v1.17.3
 	golang.org/x/time v0.11.0
 	google.golang.org/protobuf v1.36.6
 	modernc.org/sqlite v1.37.0

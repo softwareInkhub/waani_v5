@@ -19,9 +19,6 @@ import (
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	watypes "go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 	_ "modernc.org/sqlite"
 	"google.golang.org/protobuf/proto"
 	"golang.org/x/time/rate"
@@ -40,7 +37,6 @@ var (
 	}
 	clients    = make(map[*websocket.Conn]bool)
 	clientsMux sync.Mutex
-	groupsCollection *mongo.Collection
 
 	waClients   = make(map[string]*WhatsAppClient)
 	waClientsMux sync.RWMutex
@@ -59,11 +55,11 @@ type WhatsAppClient struct {
 }
 
 type DeviceInfo struct {
-	JID       string    `bson:"jid"`
-	Connected bool      `bson:"connected"`
-	LastSeen  time.Time `bson:"lastSeen"`
-	PushName  string    `bson:"pushName"`
-	Platform  string    `bson:"platform"`
+	JID       string    `json:"jid"`
+	Connected bool      `json:"connected"`
+	LastSeen  time.Time `json:"lastSeen"`
+	PushName  string    `json:"pushName"`
+	Platform  string    `json:"platform"`
 }
 
 // Contact represents a WhatsApp contact
@@ -101,7 +97,6 @@ type ChatActionRequest struct {
 }
 
 var (
-	mongoClient *mongo.Client
 	container    *sqlstore.Container
 )
 
@@ -159,12 +154,12 @@ type MessageActionRequest struct {
 
 // Group represents a WhatsApp group
 type Group struct {
-	ID           string    `bson:"_id" json:"id"`
-	Name         string    `bson:"name" json:"name"`
-	Participants int         `bson:"participants" json:"participants"`
-	DeviceID     string    `bson:"deviceId" json:"deviceId"`
-	CreatedAt    time.Time   `bson:"createdAt" json:"createdAt"`
-	UpdatedAt    time.Time   `bson:"updatedAt" json:"updatedAt"`
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Participants int       `json:"participants"`
+	DeviceID     string    `json:"deviceId"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
 // Add rate limiter
@@ -207,25 +202,6 @@ func parseTime(timeStr string) time.Time {
 		return time.Now() // Return current time as fallback
 	}
 	return t
-}
-
-func initMongoDB() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	err = client.Ping(ctx, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	mongoClient = client
-	// Initialize the groups collection
-	groupsCollection = mongoClient.Database("whatsapp").Collection("groups")
 }
 
 func broadcastToClients(message map[string]interface{}) {
@@ -1489,7 +1465,6 @@ func main() {
 		log.Printf("Warning: DynamoDB initialization failed: %v. Continuing with in-memory storage only.", err)
 	}
 
-	initMongoDB()
 	initWhatsAppContainer()
 
 	r := gin.Default()
