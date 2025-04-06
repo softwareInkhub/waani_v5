@@ -10,6 +10,7 @@ import (
 	"time"
 	"sort"
 	"strconv"
+	"encoding/json"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -43,6 +44,10 @@ var (
 
 	waClients   = make(map[string]*WhatsAppClient)
 	waClientsMux sync.RWMutex
+
+	// WebSocket clients and mutex
+	wsClients = make(map[*websocket.Conn]struct{})
+	wsClientsMux sync.RWMutex
 )
 
 type WhatsAppClient struct {
@@ -265,78 +270,103 @@ func initWhatsAppContainer() {
 				continue
 			}
 			log.Printf("Successfully connected device: %s", device.ID)
+			
+			// Set client to be active right after connecting
+			if err := client.SendPresence(watypes.PresenceAvailable); err != nil {
+				log.Printf("Error setting presence: %v", err)
+			}
 		} else {
 			log.Printf("Device %s has no stored session", device.ID)
 		}
 	}
 }
 
-func handleWebSocket(c *gin.Context) {
-	ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
-	if err != nil {
-		log.Printf("Error upgrading to websocket: %v", err)
-		return
-	}
-	defer ws.Close()
+func broadcastDeviceStatus(deviceID string, connected bool, deviceInfo map[string]interface{}) {
+    message := map[string]interface{}{
+        "type": "device_status",
+        "device": map[string]interface{}{
+            "JID":       deviceID,
+            "Connected": connected,
+            "LastSeen":  time.Now().Format(time.RFC3339),
+        },
+    }
 
-	log.Println("New WebSocket connection established")
+    // Add additional device info if available
+    if deviceInfo != nil {
+        for k, v := range deviceInfo {
+            message["device"].(map[string]interface{})[k] = v
+        }
+    }
 
-	clientsMux.Lock()
-	clients[ws] = true
-	clientsMux.Unlock()
+    // Convert message to JSON
+    jsonMessage, err := json.Marshal(message)
+    if err != nil {
+        log.Printf("Error marshaling device status: %v", err)
+        return
+    }
 
-	// Send current status of all devices
-	waClientsMux.RLock()
-	for deviceID, client := range waClients {
-		if client.Client != nil {
-			deviceInfo := getDeviceInfo(client.Client)
-			log.Printf("Sending initial device status for %s: %+v", deviceID, deviceInfo)
-			
-			err := ws.WriteJSON(map[string]interface{}{
-				"type":       "status",
-				"deviceId":   deviceID,
-				"connected":  client.Client.IsConnected(),
-				"deviceInfo": deviceInfo,
-			})
-			if err != nil {
-				log.Printf("Error sending device status: %v", err)
-			}
-		}
-	}
-	waClientsMux.RUnlock()
-
-	// Keep connection alive and handle incoming messages
-	for {
-		_, _, err := ws.ReadMessage()
-		if err != nil {
-			log.Printf("WebSocket connection closed: %v", err)
-			break
-		}
-	}
-
-	clientsMux.Lock()
-	delete(clients, ws)
-	clientsMux.Unlock()
-	log.Println("WebSocket connection removed from clients")
+    // Broadcast to all connected WebSocket clients
+    wsClientsMux.Lock()
+    for client := range wsClients {
+        err := client.WriteMessage(websocket.TextMessage, jsonMessage)
+        if err != nil {
+            log.Printf("Error sending device status to client: %v", err)
+            client.Close()
+            delete(wsClients, client)
+        }
+    }
+    wsClientsMux.Unlock()
 }
 
-func broadcastDeviceStatus(deviceID string, connected bool, deviceInfo map[string]interface{}) {
-	log.Printf("Broadcasting device status for %s: connected=%v", deviceID, connected)
-	
-	// Convert to consistent casing
-	status := map[string]interface{}{
-		"type":      "status",
-		"deviceId":  deviceID,
-		"connected": connected,
-		"deviceInfo": map[string]interface{}{
-			"JID":       deviceID,
-			"Connected": connected,
-			"PushName":  deviceInfo["pushName"],
-			"Platform":  deviceInfo["platform"],
-		},
-	}
+func handleWebSocket(c *gin.Context) {
+    // Upgrade HTTP connection to WebSocket
+    upgrader := websocket.Upgrader{
+        CheckOrigin: func(r *http.Request) bool {
+            return true // Allow all origins for testing
+        },
+    }
 
-	broadcastToClients(status)
+    ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+    if err != nil {
+        log.Printf("Error upgrading to WebSocket: %v", err)
+        return
+    }
+    defer ws.Close()
+
+    // Add client to connected clients
+    wsClientsMux.Lock()
+    wsClients[ws] = struct{}{}
+    wsClientsMux.Unlock()
+
+    // Send initial device status for all devices
+    waClientsMux.RLock()
+    for deviceID, client := range waClients {
+        if client.Client != nil && client.Client.Store != nil && client.Client.Store.ID != nil {
+            deviceInfo := map[string]interface{}{
+                "JID":       deviceID,
+                "Connected": client.Client.IsConnected(),
+                "LastSeen":  time.Now().Format(time.RFC3339),
+                "PushName":  client.Client.Store.PushName,
+                "Platform":  client.Client.Store.Platform,
+            }
+            broadcastDeviceStatus(deviceID, client.Client.IsConnected(), deviceInfo)
+        }
+    }
+    waClientsMux.RUnlock()
+
+    // Keep connection alive and handle incoming messages
+    for {
+        _, _, err := ws.ReadMessage()
+        if err != nil {
+            log.Printf("Error reading WebSocket message: %v", err)
+            break
+        }
+    }
+
+    // Remove client when connection is closed
+    wsClientsMux.Lock()
+    delete(wsClients, ws)
+    wsClientsMux.Unlock()
 }
 
 func setupWhatsAppClient(client *whatsmeow.Client) *WhatsAppClient {
@@ -346,62 +376,68 @@ func setupWhatsAppClient(client *whatsmeow.Client) *WhatsAppClient {
 		Messages:  make(map[string][]MessageInfo),
 	}
 
+	// Enable auto-reconnect
+	client.EnableAutoReconnect = true
+
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
+		case *events.QR:
+			// Handle QR code event
+			select {
+			case waClient.QRChannel <- string(v.Codes[0]):
+			default:
+			}
 		case *events.Connected:
 			log.Printf("Device connected: %s", client.Store.ID)
+			
+			// Set client to be active
+			if err := client.SendPresence(watypes.PresenceAvailable); err != nil {
+				log.Printf("Error setting presence: %v", err)
+			}
+			
 			deviceInfo := getDeviceInfo(client)
 			
-			// Update device info in DynamoDB
-			if err := db.SaveDevice(db.Device{
-				JID:       client.Store.ID.String(),
-				Connected: true,
-				LastSeen:  time.Now().Format(time.RFC3339),
-				PushName:  client.Store.PushName,
-				Platform:  client.Store.Platform,
-			}); err != nil {
-				log.Printf("Error saving device to DynamoDB: %v", err)
-			}
-			
-			// Get all contacts and store them as chats
-			contacts, err := client.Store.Contacts.GetAllContacts()
-			if err != nil {
-				log.Printf("Error getting contacts: %v", err)
-			} else {
-				for jid, contact := range contacts {
-					chat := db.Chat{
-						ID:          jid.String(),
-						DeviceID:    client.Store.ID.String(),
-						Name:        contact.FullName,
-						Type:        "private",
-						LastMessage: "",
-						UpdatedAt:   time.Now().Format(time.RFC3339),
-					}
-
-					if err := db.SaveChat(chat); err != nil {
-						log.Printf("Error saving chat to DynamoDB: %v", err)
-					}
+			// Store device info in DynamoDB asynchronously
+			go func() {
+				if err := db.SaveDevice(db.Device{
+					JID:       client.Store.ID.String(),
+					Connected: true,
+					LastSeen:  time.Now().Format(time.RFC3339),
+					PushName:  client.Store.PushName,
+					Platform:  client.Store.Platform,
+				}); err != nil {
+					log.Printf("Error saving device to DynamoDB: %v", err)
 				}
-			}
+			}()
 			
+			// Update waClients map with the latest client
+			waClientsMux.Lock()
+			waClients[client.Store.ID.String()] = waClient
+			waClientsMux.Unlock()
+			
+			// Broadcast device status to all connected WebSocket clients
 			broadcastDeviceStatus(client.Store.ID.String(), true, deviceInfo)
 
 		case *events.Disconnected:
 			if client.Store.ID != nil {
 				log.Printf("Device disconnected: %s", client.Store.ID)
 				
-				// Update device status in DynamoDB
-				if err := db.SaveDevice(db.Device{
-					JID:       client.Store.ID.String(),
-					Connected: false,
-					LastSeen:  time.Now().Format(time.RFC3339),
-					PushName:  client.Store.PushName,
-					Platform:  client.Store.Platform,
-				}); err != nil {
-					log.Printf("Error updating device status in DynamoDB: %v", err)
-				}
-				
 				deviceInfo := getDeviceInfo(client)
+				
+				// Update device status in DynamoDB asynchronously
+				go func() {
+					if err := db.SaveDevice(db.Device{
+						JID:       client.Store.ID.String(),
+						Connected: false,
+						LastSeen:  time.Now().Format(time.RFC3339),
+						PushName:  client.Store.PushName,
+						Platform:  client.Store.Platform,
+					}); err != nil {
+						log.Printf("Error updating device status in DynamoDB: %v", err)
+					}
+				}()
+				
+				// Broadcast device status to all connected WebSocket clients
 				broadcastDeviceStatus(client.Store.ID.String(), false, deviceInfo)
 			}
 
@@ -444,32 +480,11 @@ func setupWhatsAppClient(client *whatsmeow.Client) *WhatsAppClient {
 }
 
 func getDeviceInfo(client *whatsmeow.Client) map[string]interface{} {
-	if client == nil || client.Store == nil {
-		log.Println("Warning: Attempted to get device info for nil client or store")
-		return nil
-	}
-
-	info := map[string]interface{}{
-		"Connected": client.IsConnected(),
-	}
-
-	if client.Store.ID != nil {
-		info["JID"] = client.Store.ID.String()
-		info["PhoneNumber"] = client.Store.ID.User
-		info["PushName"] = client.Store.PushName
-		info["Platform"] = client.Store.Platform
-		
-		log.Printf("Device info for %s: connected=%v, pushName=%s, platform=%s", 
-			client.Store.ID.String(),
-			client.IsConnected(),
-			client.Store.PushName,
-			client.Store.Platform,
-		)
-	} else {
-		log.Println("Warning: Client store ID is nil")
-	}
-
-	return info
+    return map[string]interface{}{
+        "PushName":  client.Store.PushName,
+        "Platform":  client.Store.Platform,
+        "Connected": client.IsConnected(),
+    }
 }
 
 func updateDeviceInfo(deviceID string, connected bool, deviceInfo map[string]interface{}) {
@@ -1383,7 +1398,7 @@ func main() {
 	
 	// Increase server timeout
 	srv := &http.Server{
-		Addr:    ":8080",
+		Addr:    ":8081",
 		Handler: r,
 		ReadTimeout:  3 * time.Minute,
 		WriteTimeout: 3 * time.Minute,
@@ -1407,7 +1422,7 @@ func main() {
 	r.GET("/devices", func(c *gin.Context) {
 		log.Println("Devices endpoint called")
 		
-		// Get active devices from waClients map
+		// Get active devices directly from waClients map
 		waClientsMux.RLock()
 		activeDevices := make([]DeviceInfo, 0)
 		for deviceID, waClient := range waClients {
@@ -1420,41 +1435,24 @@ func main() {
 					Platform:  waClient.Client.Store.Platform,
 				}
 				log.Printf("Found active device: %+v", deviceInfo)
-				
-				// Save device info to DynamoDB
-				err := db.SaveDevice(db.Device{
-					JID:       deviceID,
-					Connected: waClient.Client.IsConnected(),
-					LastSeen:  time.Now().Format(time.RFC3339),
-					PushName:  waClient.Client.Store.PushName,
-					Platform:  waClient.Client.Store.Platform,
-				})
-				if err != nil {
-					log.Printf("Error saving device to DynamoDB: %v", err)
-				}
-				
 				activeDevices = append(activeDevices, deviceInfo)
+				
+				// Store device info in DynamoDB asynchronously
+				go func(info DeviceInfo) {
+					err := db.SaveDevice(db.Device{
+						JID:       info.JID,
+						Connected: info.Connected,
+						LastSeen:  time.Now().Format(time.RFC3339),
+						PushName:  info.PushName,
+						Platform:  info.Platform,
+					})
+					if err != nil {
+						log.Printf("Error saving device to DynamoDB: %v", err)
+					}
+				}(deviceInfo)
 			}
 		}
 		waClientsMux.RUnlock()
-
-		// If no active devices found in memory, try to get them from DynamoDB
-		if len(activeDevices) == 0 {
-			devices, err := db.GetDevices("")
-			if err != nil {
-				log.Printf("Error getting devices from DynamoDB: %v", err)
-			} else {
-				for _, device := range devices {
-					activeDevices = append(activeDevices, DeviceInfo{
-						JID:       device.JID,
-						Connected: device.Connected,
-						LastSeen:  time.Now(),
-						PushName:  device.PushName,
-						Platform:  device.Platform,
-					})
-				}
-			}
-		}
 
 		log.Printf("Returning %d active devices", len(activeDevices))
 		c.JSON(http.StatusOK, activeDevices)
@@ -2535,5 +2533,71 @@ func main() {
 		})
 	}
 
+	// Add QR code endpoint
+	r.GET("/qr", func(c *gin.Context) {
+		log.Println("QR code endpoint called")
+		
+		// Create a new device
+		device := container.NewDevice()
+		if device == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create device"})
+			return
+		}
+
+		// Create WhatsApp client
+		client := whatsmeow.NewClient(device, nil)
+		if client == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create WhatsApp client"})
+			return
+		}
+
+		// Setup client with event handlers
+		waClient := setupWhatsAppClient(client)
+
+		// Get QR channel before connecting
+		qrChan, err := client.GetQRChannel(context.Background())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to get QR channel: %v", err)})
+			return
+		}
+
+		// Connect to WhatsApp
+		err = client.Connect()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to connect: %v", err)})
+			return
+		}
+
+		log.Println("Waiting for QR code...")
+
+		// Wait for either QR code or successful connection
+		select {
+		case evt := <-qrChan:
+			log.Printf("Received QR event: %+v", evt)
+			
+			// Store client in waClients map only after successful QR generation
+			waClientsMux.Lock()
+			if device.ID != nil {
+				waClients[device.ID.String()] = waClient
+				log.Printf("Stored new device with ID: %s", device.ID.String())
+			}
+			waClientsMux.Unlock()
+
+			c.JSON(http.StatusOK, gin.H{
+				"qr": gin.H{
+					"code": evt.Code,
+					"timeout": 30000, // 30 seconds timeout
+				},
+			})
+			return
+
+		case <-time.After(30 * time.Second):
+			// Clean up if timeout occurs
+			client.Disconnect()
+			c.JSON(http.StatusRequestTimeout, gin.H{"error": "Timeout waiting for QR code"})
+			return
+		}
+	})
+
 	log.Fatal(srv.ListenAndServe())
-} 
+}

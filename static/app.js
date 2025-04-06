@@ -321,31 +321,58 @@ document.addEventListener('DOMContentLoaded', () => {
     addDeviceBtn.addEventListener('click', async () => {
         try {
             qrSection.classList.remove('hidden');
-            qrCanvas.classList.remove('hidden');
+            
+            // Show loading state
+            qrSection.innerHTML = `
+                <div class="text-center p-4">
+                    <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900 mx-auto"></div>
+                    <p class="mt-2 text-gray-600">Generating QR code...</p>
+                </div>
+            `;
             
             const response = await fetch('/qr');
             const data = await response.json();
             
             if (data.error) {
-                alert(data.error);
-                qrSection.classList.add('hidden');
-                return;
+                throw new Error(data.error);
             }
 
-            console.log('Generating QR code with data:', data.qr);
-            await QRCode.toCanvas(qrCanvas, data.qr.Code, {
+            // Check if data.qr.code exists
+            if (!data.qr || !data.qr.code) {
+                throw new Error('Invalid QR code data received');
+            }
+
+            console.log('Generating QR code with data:', data);
+            
+            // Reset qrSection content and create QR container
+            qrSection.innerHTML = `
+                <div class="flex flex-col items-center justify-center">
+                    <div id="qr-container" class="bg-white p-4 rounded-lg shadow-md"></div>
+                    <p class="mt-4 text-sm text-gray-600">Open WhatsApp on your phone and scan this QR code</p>
+                </div>
+            `;
+            
+            // Generate new QR code with the QR code string
+            const qrContainer = document.getElementById('qr-container');
+            const qr = new QRCode(qrContainer, {
+                text: data.qr.code,
                 width: 256,
-                margin: 1,
-                color: {
-                    dark: '#000000',
-                    light: '#ffffff'
-                }
+                height: 256,
+                colorDark: '#000000',
+                colorLight: '#ffffff'
             });
+            
             console.log('QR code generated successfully');
         } catch (error) {
             console.error('Error generating QR code:', error);
-            alert('Failed to generate QR code. Please try again.');
-            qrSection.classList.add('hidden');
+            
+            // Show error message
+            qrSection.innerHTML = `
+                <div class="p-4 bg-red-50 border border-red-200 rounded-md">
+                    <p class="text-red-600">${error.message}</p>
+                    <p class="text-sm text-red-500 mt-2">Please try again</p>
+                </div>
+            `;
         }
     });
 
@@ -464,42 +491,59 @@ document.addEventListener('DOMContentLoaded', () => {
     // QR Code Modal Functions
     window.showQRModal = async () => {
         const modal = document.getElementById('qrModal');
-        const canvas = document.getElementById('qrCanvas');
-        const status = document.getElementById('qrStatus');
+        const qrDisplay = document.getElementById('qr-display');
+        const qrStatus = document.getElementById('qr-status');
         
-        if (!modal || !canvas || !status) return;
+        if (!modal || !qrDisplay || !qrStatus) return;
         
         modal.classList.remove('hidden');
-        status.textContent = 'Generating QR code...';
+        qrStatus.textContent = 'Generating QR code...';
+        qrDisplay.innerHTML = ''; // Clear any existing QR code
         
         try {
             const response = await fetch('/qr');
             const data = await response.json();
             
             if (data.error) {
-                status.textContent = data.error;
+                qrStatus.textContent = data.error;
                 return;
             }
 
-            await QRCode.toCanvas(canvas, data.qr.code, {
+            if (!data.qr || !data.qr.code) {
+                throw new Error('Invalid QR code data received');
+            }
+
+            // Generate new QR code with the QR code string
+            const qr = new QRCode(qrDisplay, {
+                text: data.qr.code,
                 width: 256,
-                margin: 1,
-                color: {
-                    dark: '#000000',
-                    light: '#ffffff'
-                }
+                height: 256,
+                colorDark: '#000000',
+                colorLight: '#ffffff'
             });
             
-            status.textContent = 'Scan this QR code with WhatsApp';
+            qrStatus.textContent = 'Open WhatsApp on your phone and scan this QR code';
         } catch (error) {
-            status.textContent = 'Error generating QR code';
-            console.error('Error:', error);
+            console.error('Error generating QR code:', error);
+            qrStatus.textContent = `Error: ${error.message}`;
+            qrDisplay.innerHTML = `
+                <div class="p-4 bg-red-50 border border-red-200 rounded-md">
+                    <p class="text-red-600">Failed to generate QR code</p>
+                    <p class="text-sm text-red-500 mt-2">Please try again</p>
+                </div>
+            `;
         }
     };
 
     window.hideQRModal = () => {
         const modal = document.getElementById('qrModal');
-        if (modal) modal.classList.add('hidden');
+        const qrDisplay = document.getElementById('qr-display');
+        if (modal) {
+            modal.classList.add('hidden');
+            if (qrDisplay) {
+                qrDisplay.innerHTML = ''; // Clear QR code when hiding modal
+            }
+        }
     };
 
     // API Testing Functions
