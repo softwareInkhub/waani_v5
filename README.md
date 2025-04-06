@@ -10,7 +10,7 @@ A modern, scalable WhatsApp API interface that enables managing multiple WhatsAp
 - Group management (create, join, leave, update)
 - Real-time WebSocket updates for device status
 - DynamoDB integration for message persistence
-- MongoDB integration for device and group management
+- SQLite for session storage
 - Comprehensive test suite with automated test reporting
 - Rate limiting for API endpoints
 - Modern web interface with real-time updates
@@ -20,7 +20,6 @@ A modern, scalable WhatsApp API interface that enables managing multiple WhatsAp
 - Backend: Go 1.24+
 - Databases: 
   - DynamoDB (message storage)
-  - MongoDB (device and group management)
   - SQLite (whatsmeow session storage)
 - Real-time: WebSocket for live updates
 - WhatsApp: whatsmeow library
@@ -29,9 +28,9 @@ A modern, scalable WhatsApp API interface that enables managing multiple WhatsAp
 ## Prerequisites
 
 1. Go 1.24 or later
-2. MongoDB 4.4+ running locally or accessible
-3. AWS account with DynamoDB access
-4. Git for version control
+2. AWS account with DynamoDB access
+3. Git for version control
+4. SQLite (usually comes with the OS)
 
 ## Installation
 
@@ -48,33 +47,87 @@ A modern, scalable WhatsApp API interface that enables managing multiple WhatsAp
 
 3. Create a `.env` file in the project root:
    ```env
-   # AWS Configuration
+   # Required Configuration
    AWS_ACCESS_KEY_ID=your_access_key
    AWS_SECRET_ACCESS_KEY=your_secret_key
    AWS_REGION=your_region  # defaults to us-east-1
-
-   # MongoDB Configuration
-   MONGODB_URI=mongodb://localhost:27017
-
-   # Server Configuration
-   PORT=8081  # API server port
    ```
 
 ## Running the Application
 
-1. Start the server:
+1. First, verify your setup:
    ```bash
+   # Check Go installation
+   go version  # Should show Go 1.24 or later
+
+   # Verify environment variables
+   cat .env  # Should show your AWS credentials
+   ```
+
+2. Start the server:
+   ```bash
+   # Give execute permission to scripts
+   chmod +x scripts/start_server.sh scripts/run_tests.sh
+
+   # Start the server
    ./scripts/start_server.sh
    ```
-   This script will:
-   - Build the application
-   - Start the server
-   - Run the test suite
-   - Generate a test report
 
-2. The server will be available at:
+3. The server will be available at:
    - API: http://localhost:8081
    - WebSocket: ws://localhost:8081/ws
+
+## Server Startup Troubleshooting
+
+If you encounter issues during server startup, follow these steps:
+
+1. **"Waiting for server to be ready..." message persists**:
+   - Check if port 8081 is available:
+     ```bash
+     lsof -i :8081  # On Linux/Mac
+     # or
+     netstat -ano | findstr :8081  # On Windows
+     ```
+   - If port is in use, kill the process or change the port
+
+2. **AWS Configuration Issues**:
+   - Verify your AWS credentials:
+     ```bash
+     # Test AWS credentials
+     aws configure list
+     aws sts get-caller-identity
+     ```
+   - Ensure DynamoDB tables exist in your AWS region
+   - Check AWS permissions for DynamoDB access
+
+3. **Server Fails to Start**:
+   - Check server logs:
+     ```bash
+     # Start server in foreground for debugging
+     go run main.go
+     ```
+   - Verify SQLite file permissions:
+     ```bash
+     # Ensure write permissions in directory
+     ls -l whatsapp.db
+     chmod 666 whatsapp.db  # If needed
+     ```
+
+4. **Common Solutions**:
+   - Clear any existing database files:
+     ```bash
+     rm -f whatsapp.db
+     rm -f *.db-journal
+     ```
+   - Rebuild the application:
+     ```bash
+     go clean
+     go build -o waani
+     ```
+   - Start server with debug logging:
+     ```bash
+     DEBUG=1 ./scripts/start_server.sh
+     ```
 
 ## API Endpoints
 
@@ -140,23 +193,6 @@ The API uses standard HTTP status codes:
 ### Rate Limiting
 - Group operations: 1 request per second
 - Message sending: 10 messages per minute per device
-
-## Troubleshooting
-
-1. DynamoDB Connection Issues:
-   - Verify AWS credentials in `.env`
-   - Check AWS region configuration
-   - Ensure DynamoDB tables exist
-
-2. MongoDB Connection Issues:
-   - Verify MongoDB is running: `mongosh`
-   - Check MongoDB connection string
-   - Ensure proper permissions
-
-3. WhatsApp Connection Issues:
-   - Verify device pairing status
-   - Check internet connectivity
-   - Monitor WebSocket connection
 
 ## Contributing
 
